@@ -123,6 +123,22 @@ Contacts and settings are stored locally on the device. The app does not include
 
 See [PRIVACY.md](/Users/daveharris/Documents/New%20project/PRIVACY.md).
 
+## Known issues and future improvements
+
+- Kiosk behavior is handset-specific. Some phones may still show transient system bars or different navigation affordances even when lock task and device-owner policies are active.
+- The app currently relies on the system Phone and Messages apps rather than owning the full call/SMS experience.
+- Contacts are local-only and do not sync or back up anywhere.
+- The release build is currently signed with the debug keystore for convenience, which is fine for local installs but not ideal for broader distribution.
+- The package name and branding are still prototype-oriented rather than fully generic.
+
+Potential future improvements:
+
+- add a proper user-owned release signing setup
+- test and document more Android versions and phone models
+- add import/export or backup for local contacts and settings
+- optionally support a stricter admin-only contact editing mode by default
+- refine the kiosk experience further for supported OEMs
+
 ## Public repo suitability
 
 This project is suitable for an MIT-licensed public repository if the goal is:
