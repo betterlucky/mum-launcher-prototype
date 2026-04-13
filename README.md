@@ -20,6 +20,12 @@ This repo is for people who want:
 - Hides admin access behind a PIN-protected flow.
 - Supports best-effort kiosk mode when the app is device owner.
 
+## Screenshots
+
+| Launcher | Calls | Messages |
+| --- | --- | --- |
+| ![Launcher](docs/screenshots/launcher.png) | ![Calls](docs/screenshots/calls.png) | ![Messages](docs/screenshots/messages.png) |
+
 ## Current state
 
 - Tested on a Motorola Moto G31 running Android 12.
