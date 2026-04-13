@@ -33,7 +33,7 @@ This repo is for people who want:
 - Focused on one calm, low-friction interaction model rather than broad Android compatibility.
 - Suitable for open-source reuse, with device-specific kiosk caveats.
 
-## Local setup on a fresh Mac
+## Local setup
 
 1. Install JDK 17.
 2. Install Android Studio.
@@ -106,7 +106,7 @@ adb install -r "app/build/outputs/apk/release/app-release.apk"
 Example command:
 
 ```bash
-adb shell dpm set-device-owner com.daveharris.mumlauncher/.MumDeviceAdminReceiver
+adb shell dpm set-device-owner com.joebloggs.mumlauncher/.MumDeviceAdminReceiver
 ```
 
 ## Device support and limitations
@@ -115,13 +115,13 @@ adb shell dpm set-device-owner com.daveharris.mumlauncher/.MumDeviceAdminReceive
 - Kiosk behavior is not guaranteed to be identical across manufacturers.
 - This repository currently treats the Moto G31 on Android 12 as the reference device.
 
-See [SUPPORTED_DEVICES.md](/Users/daveharris/Documents/New%20project/SUPPORTED_DEVICES.md).
+See [SUPPORTED_DEVICES.md](/Users/joebloggs/Documents/New%20project/SUPPORTED_DEVICES.md).
 
 ## Privacy
 
 Contacts and settings are stored locally on the device. The app does not include analytics, accounts, or cloud sync.
 
-See [PRIVACY.md](/Users/daveharris/Documents/New%20project/PRIVACY.md).
+See [PRIVACY.md](/Users/joebloggs/Documents/New%20project/PRIVACY.md).
 
 ## Known issues and future improvements
 
@@ -138,18 +138,3 @@ Potential future improvements:
 - add import/export or backup for local contacts and settings
 - optionally support a stricter admin-only contact editing mode by default
 - refine the kiosk experience further for supported OEMs
-
-## Public repo suitability
-
-This project is suitable for an MIT-licensed public repository if the goal is:
-
-- sharing a working accessibility-oriented launcher prototype
-- giving others a base for kiosk launcher experiments
-- letting people borrow and adapt the code
-
-It is not yet a polished general-purpose product. Before wider public promotion, I would recommend:
-
-- adding screenshots
-- making release signing fully user-owned rather than using the debug keystore
-
-So: good as an open prototype/codebase, not yet positioned as a fully supported consumer app.
