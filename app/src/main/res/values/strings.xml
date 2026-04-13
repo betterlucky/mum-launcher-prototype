@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Mum Launcher</string>
+    <string name="device_admin_description">Device admin used for kiosk-style launcher management during support.</string>
+</resources>
