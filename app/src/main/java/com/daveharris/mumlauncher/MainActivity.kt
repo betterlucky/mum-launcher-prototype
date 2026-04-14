@@ -5,14 +5,19 @@ import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.Settings
+import android.text.format.DateFormat
+import android.widget.TimePicker
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.app.TimePickerDialog
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -35,6 +40,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -42,6 +48,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -56,6 +63,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -68,6 +76,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -90,9 +99,11 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.daveharris.mumlauncher.data.Contact
 import com.daveharris.mumlauncher.data.ContactRepository
+import com.daveharris.mumlauncher.data.LauncherMode
 import com.daveharris.mumlauncher.data.LauncherSettings
 import com.daveharris.mumlauncher.data.SettingsStore
 import com.daveharris.mumlauncher.ui.theme.MumLauncherTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -100,13 +111,27 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
+import java.util.Calendar
 
 private enum class Screen {
     HOME,
     CALLS,
     MESSAGES,
+    APPS,
     ADMIN,
 }
+
+private enum class EffectiveMode {
+    SIMPLE,
+    NORMAL,
+}
+
+private data class AppEntry(
+    val label: String,
+    val packageName: String,
+    val launchIntent: Intent,
+    val isAvailableInCurrentMode: Boolean,
+)
 
 data class AppUiState(
     val contacts: List<Contact> = emptyList(),
@@ -162,6 +187,14 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun setKioskEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsStore.setKioskEnabled(enabled) }
+    }
+
+    fun setLauncherMode(mode: LauncherMode) {
+        viewModelScope.launch { settingsStore.setLauncherMode(mode) }
+    }
+
+    fun setSchedule(days: Set<Int>, startMinutes: Int, endMinutes: Int) {
+        viewModelScope.launch { settingsStore.setSchedule(days, startMinutes, endMinutes) }
     }
 
     fun addContact(name: String, phoneNumber: String) {
@@ -250,10 +283,28 @@ private fun LauncherApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    var currentTimeMs by remember { mutableStateOf(System.currentTimeMillis()) }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
+    val effectiveMode = remember(
+        uiState.settings.launcherMode,
+        uiState.settings.scheduleDays,
+        uiState.settings.scheduleStartMinutes,
+        uiState.settings.scheduleEndMinutes,
+        currentTimeMs,
+        uiState.settings.lastSystemEventAtMs,
+    ) {
+        computeEffectiveMode(uiState.settings, currentTimeMs)
+    }
+    val appEntries = remember(
+        context,
+        uiState.settings.kioskEnabled,
+        uiState.settings.lastSystemEventAtMs,
+    ) {
+        loadLaunchableApps(context, uiState.settings.kioskEnabled)
+    }
 
     LaunchedEffect(uiState.settings.kioskEnabled, uiState.settings.setupComplete) {
         activity.hideSystemUi()
@@ -268,10 +319,24 @@ private fun LauncherApp(
         }
     }
 
+    LaunchedEffect(uiState.settings.setupComplete, uiState.settings.lastSystemEventAtMs) {
+        currentTimeMs = System.currentTimeMillis()
+        while (uiState.settings.setupComplete) {
+            delay(60_000)
+            currentTimeMs = System.currentTimeMillis()
+        }
+    }
+
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearError()
+        }
+    }
+
+    LaunchedEffect(effectiveMode, screen) {
+        if (effectiveMode == EffectiveMode.SIMPLE && screen == Screen.APPS) {
+            screen = Screen.HOME
         }
     }
 
@@ -288,7 +353,7 @@ private fun LauncherApp(
     BackHandler {
         screen = when (screen) {
             Screen.HOME -> Screen.HOME
-            Screen.CALLS, Screen.MESSAGES, Screen.ADMIN -> Screen.HOME
+            Screen.CALLS, Screen.MESSAGES, Screen.APPS, Screen.ADMIN -> Screen.HOME
         }
     }
 
@@ -305,8 +370,10 @@ private fun LauncherApp(
         ) {
             when (screen) {
                 Screen.HOME -> HomeScreen(
+                    effectiveMode = effectiveMode,
                     onOpenCalls = { screen = Screen.CALLS },
                     onOpenMessages = { screen = Screen.MESSAGES },
+                    onOpenApps = { screen = Screen.APPS },
                     onOpenAdmin = { showPinPrompt = true },
                 )
 
@@ -334,13 +401,21 @@ private fun LauncherApp(
                     onDelete = viewModel::deleteContact,
                 )
 
+                Screen.APPS -> AppsScreen(
+                    apps = appEntries,
+                    onBack = { screen = Screen.HOME },
+                )
+
                 Screen.ADMIN -> AdminScreen(
                     settings = uiState.settings,
+                    effectiveMode = effectiveMode,
                     contacts = uiState.contacts,
                     diagnostics = buildDiagnostics(context),
                     onBack = { screen = Screen.HOME },
                     onToggleEditing = viewModel::setAllowUserEditing,
                     onToggleKiosk = viewModel::setKioskEnabled,
+                    onSetLauncherMode = viewModel::setLauncherMode,
+                    onSetSchedule = viewModel::setSchedule,
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
@@ -482,6 +557,112 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
     }
 }
 
+private fun computeEffectiveMode(
+    settings: LauncherSettings,
+    currentTimeMs: Long,
+): EffectiveMode {
+    return when (settings.launcherMode) {
+        LauncherMode.SIMPLE -> EffectiveMode.SIMPLE
+        LauncherMode.NORMAL -> EffectiveMode.NORMAL
+        LauncherMode.SCHEDULED -> {
+            if (isInsideScheduledWindow(settings, currentTimeMs)) {
+                EffectiveMode.SIMPLE
+            } else {
+                EffectiveMode.NORMAL
+            }
+        }
+    }
+}
+
+private fun isInsideScheduledWindow(settings: LauncherSettings, currentTimeMs: Long): Boolean {
+    val calendar = Calendar.getInstance().apply { timeInMillis = currentTimeMs }
+    val today = calendar.get(Calendar.DAY_OF_WEEK)
+    val nowMinutes = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
+    val start = settings.scheduleStartMinutes
+    val end = settings.scheduleEndMinutes
+
+    if (start == end) return settings.scheduleDays.contains(today)
+
+    return if (start < end) {
+        settings.scheduleDays.contains(today) && nowMinutes in start until end
+    } else {
+        val previousDay = if (today == Calendar.SUNDAY) Calendar.SATURDAY else today - 1
+        (settings.scheduleDays.contains(today) && nowMinutes >= start) ||
+            (settings.scheduleDays.contains(previousDay) && nowMinutes < end)
+    }
+}
+
+private fun loadLaunchableApps(context: Context, kioskEnabled: Boolean): List<AppEntry> {
+    val packageManager = context.packageManager
+    val kioskState = KioskController.getState(context)
+    val baseIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val resolvedApps = packageManager.queryIntentActivities(baseIntent, PackageManager.MATCH_ALL)
+
+    return resolvedApps
+        .asSequence()
+        .filterNot { it.activityInfo.packageName == context.packageName }
+        .map { resolveInfo ->
+            val packageName = resolveInfo.activityInfo.packageName
+            val launchIntent = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setClassName(packageName, resolveInfo.activityInfo.name)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val isAvailableInCurrentMode = !kioskEnabled ||
+                !kioskState.isDeviceOwner ||
+                isPackageAllowedInLockTask(context, packageName)
+            AppEntry(
+                label = resolveInfo.loadLabel(packageManager).toString(),
+                packageName = packageName,
+                launchIntent = launchIntent,
+                isAvailableInCurrentMode = isAvailableInCurrentMode,
+            )
+        }
+        .filter { it.isAvailableInCurrentMode || !kioskEnabled }
+        .sortedBy { it.label.lowercase() }
+        .toList()
+}
+
+private fun isPackageAllowedInLockTask(context: Context, packageName: String): Boolean {
+    val policyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    return runCatching { policyManager.isLockTaskPermitted(packageName) }.getOrDefault(false)
+}
+
+private fun launchApp(context: Context, appEntry: AppEntry) {
+    launchExternalIntent(context, appEntry.launchIntent, "This app is not available right now.")
+}
+
+private fun formatTimeLabel(context: Context, minutes: Int): String {
+    val calendar = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, minutes / 60)
+        set(Calendar.MINUTE, minutes % 60)
+    }
+    return DateFormat.getTimeFormat(context).format(calendar.time)
+}
+
+private fun describeDays(days: Set<Int>): String {
+    val labels = listOf(
+        Calendar.SUNDAY to "Sun",
+        Calendar.MONDAY to "Mon",
+        Calendar.TUESDAY to "Tue",
+        Calendar.WEDNESDAY to "Wed",
+        Calendar.THURSDAY to "Thu",
+        Calendar.FRIDAY to "Fri",
+        Calendar.SATURDAY to "Sat",
+    )
+    return labels.filter { days.contains(it.first) }.joinToString(" ") { it.second }
+}
+
+private fun modeLabel(mode: LauncherMode): String = when (mode) {
+    LauncherMode.SIMPLE -> "Simple"
+    LauncherMode.NORMAL -> "Full Access"
+    LauncherMode.SCHEDULED -> "Scheduled"
+}
+
+private fun effectiveModeLabel(mode: EffectiveMode): String = when (mode) {
+    EffectiveMode.SIMPLE -> "Simple"
+    EffectiveMode.NORMAL -> "Full Access"
+}
+
 @Composable
 private fun SetupScreen(
     onOpenHomeSettings: () -> Unit,
@@ -507,7 +688,7 @@ private fun SetupScreen(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "Use this screen once, before handing over the phone. The prototype uses the system Phone and Messages apps, but keeps contacts local to the launcher.",
+            text = "Use this screen once, before handing over the phone. Android treats this as a Home app, not a normal app, so it must be chosen in Home settings.",
             color = Color.White.copy(alpha = 0.9f),
             fontSize = 18.sp,
         )
@@ -581,8 +762,10 @@ private fun SetupStepCard(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeScreen(
+    effectiveMode: EffectiveMode,
     onOpenCalls: () -> Unit,
     onOpenMessages: () -> Unit,
+    onOpenApps: () -> Unit,
     onOpenAdmin: () -> Unit,
 ) {
     var tapCount by remember { mutableIntStateOf(0) }
@@ -663,6 +846,14 @@ private fun HomeScreen(
                 color = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenMessages,
             )
+            if (effectiveMode == EffectiveMode.NORMAL) {
+                HomeActionButton(
+                    label = "Apps",
+                    icon = Icons.Outlined.Apps,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    onClick = onOpenApps,
+                )
+            }
         }
 
         Spacer(modifier = Modifier.weight(1.15f))
@@ -711,6 +902,81 @@ private fun HomeActionButton(
                         modifier = Modifier.size(32.dp),
                         tint = Color.White,
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppsScreen(
+    apps: List<AppEntry>,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onBack) { Text("Back") }
+            Text(
+                text = "Apps",
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.size(70.dp))
+        }
+
+        if (apps.isEmpty()) {
+            Card {
+                Text(
+                    text = "No additional apps are available in the current mode.",
+                    modifier = Modifier.padding(24.dp),
+                    fontSize = 20.sp,
+                )
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(apps, key = { it.packageName }) { app ->
+                    Card(
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = app.label,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = app.packageName,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = { launchApp(context, app) },
+                                enabled = app.isAvailableInCurrentMode,
+                            ) {
+                                Text("Open")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -837,11 +1103,14 @@ private fun ContactCard(
 @Composable
 private fun AdminScreen(
     settings: LauncherSettings,
+    effectiveMode: EffectiveMode,
     contacts: List<Contact>,
     diagnostics: Diagnostics,
     onBack: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleKiosk: (Boolean) -> Unit,
+    onSetLauncherMode: (LauncherMode) -> Unit,
+    onSetSchedule: (Set<Int>, Int, Int) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
@@ -869,8 +1138,33 @@ private fun AdminScreen(
             Icon(Icons.Outlined.Settings, contentDescription = null)
         }
 
+        Card {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Launcher mode", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Current active mode: ${effectiveModeLabel(effectiveMode)}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+                ModeSelector(
+                    selectedMode = settings.launcherMode,
+                    onSelectMode = onSetLauncherMode,
+                )
+                FilledTonalButton(onClick = onOpenHomeSettings) {
+                    Text("Revert to normal launcher")
+                }
+                if (settings.launcherMode == LauncherMode.SCHEDULED) {
+                    ScheduleEditor(
+                        selectedDays = settings.scheduleDays,
+                        startMinutes = settings.scheduleStartMinutes,
+                        endMinutes = settings.scheduleEndMinutes,
+                        onSaveSchedule = onSetSchedule,
+                    )
+                }
+            }
+        }
+
         ToggleCard(
-            title = "Allow contact editing in normal mode",
+            title = "Allow contact editing in full access mode",
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
@@ -891,7 +1185,6 @@ private fun AdminScreen(
                 Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
                 Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
                 Text("Kiosk allowlist: ${diagnostics.allowlistedPackages.joinToString()}")
-                FilledTonalButton(onClick = onOpenHomeSettings) { Text("Open Home Settings") }
                 FilledTonalButton(onClick = onEnableDeviceAdmin) { Text("Open Device Admin") }
                 FilledTonalButton(onClick = onOpenAccessibilitySettings) { Text("Open Accessibility Settings") }
             }
@@ -920,6 +1213,125 @@ private fun AdminScreen(
             )
         }
     }
+}
+
+@Composable
+private fun ModeSelector(
+    selectedMode: LauncherMode,
+    onSelectMode: (LauncherMode) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        LauncherMode.entries.forEach { mode ->
+            val label = modeLabel(mode)
+            val selected = selectedMode == mode
+            if (selected) {
+                FilledTonalButton(
+                    onClick = { onSelectMode(mode) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(label, textAlign = TextAlign.Center)
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { onSelectMode(mode) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(label, textAlign = TextAlign.Center)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleEditor(
+    selectedDays: Set<Int>,
+    startMinutes: Int,
+    endMinutes: Int,
+    onSaveSchedule: (Set<Int>, Int, Int) -> Unit,
+) {
+    val context = LocalContext.current
+    var draftDays by remember(selectedDays) { mutableStateOf(selectedDays) }
+    var draftStart by remember(startMinutes) { mutableIntStateOf(startMinutes) }
+    var draftEnd by remember(endMinutes) { mutableIntStateOf(endMinutes) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "Days: ${describeDays(draftDays)}",
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                Calendar.MONDAY to "M",
+                Calendar.TUESDAY to "Tu",
+                Calendar.WEDNESDAY to "W",
+                Calendar.THURSDAY to "Th",
+                Calendar.FRIDAY to "F",
+                Calendar.SATURDAY to "Sa",
+                Calendar.SUNDAY to "Su",
+            ).forEach { (day, label) ->
+                val selected = draftDays.contains(day)
+                val onClick = {
+                    draftDays = if (selected) draftDays - day else draftDays + day
+                }
+                if (selected) {
+                    FilledTonalButton(
+                        onClick = onClick,
+                        modifier = Modifier.widthIn(min = 0.dp),
+                    ) { Text(label) }
+                } else {
+                    OutlinedButton(
+                        onClick = onClick,
+                        modifier = Modifier.widthIn(min = 0.dp),
+                    ) { Text(label) }
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = {
+                    showTimePicker(context, draftStart) { draftStart = it }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Start: ${formatTimeLabel(context, draftStart)}")
+            }
+            OutlinedButton(
+                onClick = {
+                    showTimePicker(context, draftEnd) { draftEnd = it }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("End: ${formatTimeLabel(context, draftEnd)}")
+            }
+        }
+        FilledTonalButton(
+            onClick = { onSaveSchedule(draftDays, draftStart, draftEnd) },
+            enabled = draftDays.isNotEmpty(),
+        ) {
+            Text("Save schedule")
+        }
+    }
+}
+
+private fun showTimePicker(
+    context: Context,
+    initialMinutes: Int,
+    onPicked: (Int) -> Unit,
+) {
+    TimePickerDialog(
+        context,
+        { _: TimePicker, hour: Int, minute: Int -> onPicked(hour * 60 + minute) },
+        initialMinutes / 60,
+        initialMinutes % 60,
+        DateFormat.is24HourFormat(context),
+    ).show()
 }
 
 @Composable
