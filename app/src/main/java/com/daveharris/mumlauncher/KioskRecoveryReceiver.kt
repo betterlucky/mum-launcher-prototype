@@ -11,18 +11,15 @@ class KioskRecoveryReceiver : BroadcastReceiver() {
         runBlocking {
             SettingsStore(context).markSystemEvent(System.currentTimeMillis())
         }
-        if (
-            intent.action == Intent.ACTION_BOOT_COMPLETED ||
-            intent.action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
-            intent.action == Intent.ACTION_MY_PACKAGE_REPLACED ||
-            intent.action == Intent.ACTION_TIME_CHANGED ||
-            intent.action == Intent.ACTION_TIMEZONE_CHANGED ||
-            intent.action == Intent.ACTION_DATE_CHANGED
-        ) {
-            val launchIntent = Intent(context, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(launchIntent)
+        when (intent.action) {
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            Intent.ACTION_TIME_CHANGED,
+            Intent.ACTION_TIMEZONE_CHANGED,
+            Intent.ACTION_DATE_CHANGED,
+            ACTION_SCHEDULE_CHECK,
+            -> SchedulePromptController.handleReceiver(context)
         }
     }
 }

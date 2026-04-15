@@ -1,28 +1,33 @@
 package com.daveharris.mumlauncher
 
+import android.app.TimePickerDialog
 import android.app.admin.DevicePolicyManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.pm.ResolveInfo
+import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.format.DateFormat
-import android.widget.TimePicker
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.app.TimePickerDialog
+import android.widget.TimePicker
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -48,7 +53,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -76,7 +80,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -113,25 +116,19 @@ import kotlinx.coroutines.launch
 import java.security.MessageDigest
 import java.util.Calendar
 
+private const val ACTION_OPEN_FOCUS_NOW = "com.daveharris.mumlauncher.action.OPEN_FOCUS_NOW"
+
 private enum class Screen {
     HOME,
     CALLS,
     MESSAGES,
-    APPS,
     ADMIN,
 }
 
 private enum class EffectiveMode {
     SIMPLE,
-    NORMAL,
+    REGULAR,
 }
-
-private data class AppEntry(
-    val label: String,
-    val packageName: String,
-    val launchIntent: Intent,
-    val isAvailableInCurrentMode: Boolean,
-)
 
 data class AppUiState(
     val contacts: List<Contact> = emptyList(),
@@ -167,18 +164,32 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     }
 
     fun completeSetup(pin: String) {
-        if (pin.length < 4) {
+        if (pin.isNotBlank() && pin.length < 4) {
             transientError.value = "Choose a PIN with at least 4 digits."
             return
         }
         viewModelScope.launch {
-            settingsStore.setPinHash(hashPin(pin))
+            settingsStore.configureAdminPin(pin.takeIf { it.isNotBlank() }?.let(::hashPin))
             settingsStore.setSetupComplete(true)
         }
     }
 
     fun verifyPin(pin: String, onResult: (Boolean) -> Unit) {
+        if (!uiState.value.settings.adminPinEnabled) {
+            onResult(true)
+            return
+        }
         onResult(hashPin(pin) == uiState.value.settings.pinHash)
+    }
+
+    fun setAdminPin(pin: String?) {
+        if (!pin.isNullOrBlank() && pin.length < 4) {
+            transientError.value = "Choose a PIN with at least 4 digits."
+            return
+        }
+        viewModelScope.launch {
+            settingsStore.configureAdminPin(pin?.takeIf { it.isNotBlank() }?.let(::hashPin))
+        }
     }
 
     fun setAllowUserEditing(allowed: Boolean) {
@@ -195,6 +206,22 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun setSchedule(days: Set<Int>, startMinutes: Int, endMinutes: Int) {
         viewModelScope.launch { settingsStore.setSchedule(days, startMinutes, endMinutes) }
+    }
+
+    fun setShowFocusUntilText(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setShowFocusUntilText(enabled) }
+    }
+
+    fun setWarnIfScheduleNotificationsOff(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setWarnIfScheduleNotificationsOff(enabled) }
+    }
+
+    fun setShowLauncherAppIcon(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setShowLauncherAppIcon(enabled) }
+    }
+
+    fun setFocusSession(active: Boolean, anchor: String?) {
+        viewModelScope.launch { settingsStore.setFocusSession(active, anchor) }
     }
 
     fun addContact(name: String, phoneNumber: String) {
@@ -227,10 +254,17 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
 class MainActivity : ComponentActivity() {
     private val rehideSystemUi = Runnable { hideSystemUi() }
+    private val promptAction = MutableStateFlow<PromptAction?>(null)
+    private val resumeTick = MutableStateFlow(0L)
+    private val focusShortcutLaunchTick = MutableStateFlow(0L)
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handlePromptIntent(intent)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
             val systemBarsVisible = insets.isVisible(WindowInsetsCompat.Type.systemBars())
@@ -256,8 +290,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumeTick.value = System.currentTimeMillis()
         window.decorView.removeCallbacks(rehideSystemUi)
         hideSystemUi()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePromptIntent(intent)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -274,6 +315,30 @@ class MainActivity : ComponentActivity() {
             WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsets.Type.systemBars())
     }
+
+    fun promptActionFlow(): StateFlow<PromptAction?> = promptAction
+
+    fun resumeTickFlow(): StateFlow<Long> = resumeTick
+
+    fun focusShortcutLaunchFlow(): StateFlow<Long> = focusShortcutLaunchTick
+
+    fun consumePromptAction() {
+        promptAction.value = null
+        intent?.removeExtra(EXTRA_PROMPT_ACTION)
+    }
+
+    fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun handlePromptIntent(intent: Intent?) {
+        if (intent?.action == ACTION_OPEN_FOCUS_NOW) {
+            focusShortcutLaunchTick.value = System.currentTimeMillis()
+        }
+        promptAction.value = PromptAction.from(intent?.getStringExtra(EXTRA_PROMPT_ACTION))
+    }
 }
 
 @Composable
@@ -283,11 +348,16 @@ private fun LauncherApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val promptAction by activity.promptActionFlow().collectAsState()
+    val resumeTick by activity.resumeTickFlow().collectAsState()
+    val focusShortcutLaunchTick by activity.focusShortcutLaunchFlow().collectAsState()
     var currentTimeMs by remember { mutableStateOf(System.currentTimeMillis()) }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
+    var showSetPinDialog by remember { mutableStateOf(false) }
+    var autoPrompt by rememberSaveable { mutableStateOf<DuePrompt?>(null) }
     val effectiveMode = remember(
         uiState.settings.launcherMode,
         uiState.settings.scheduleDays,
@@ -296,14 +366,11 @@ private fun LauncherApp(
         currentTimeMs,
         uiState.settings.lastSystemEventAtMs,
     ) {
-        computeEffectiveMode(uiState.settings, currentTimeMs)
-    }
-    val appEntries = remember(
-        context,
-        uiState.settings.kioskEnabled,
-        uiState.settings.lastSystemEventAtMs,
-    ) {
-        loadLaunchableApps(context, uiState.settings.kioskEnabled)
+        if (shouldUseFocusLauncherNow(uiState.settings, currentTimeMs)) {
+            EffectiveMode.SIMPLE
+        } else {
+            EffectiveMode.REGULAR
+        }
     }
 
     LaunchedEffect(uiState.settings.kioskEnabled, uiState.settings.setupComplete) {
@@ -319,6 +386,24 @@ private fun LauncherApp(
         }
     }
 
+    LaunchedEffect(
+        uiState.settings.launcherMode,
+        uiState.settings.scheduleDays,
+        uiState.settings.scheduleStartMinutes,
+        uiState.settings.scheduleEndMinutes,
+        uiState.settings.setupComplete,
+        uiState.settings.lastSystemEventAtMs,
+        uiState.settings.focusSessionActive,
+        uiState.settings.focusSessionAnchor,
+        resumeTick,
+    ) {
+        SchedulePromptController.sync(context, uiState.settings)
+    }
+
+    LaunchedEffect(uiState.settings.showLauncherAppIcon) {
+        setLauncherEntryIconEnabled(context, uiState.settings.showLauncherAppIcon)
+    }
+
     LaunchedEffect(uiState.settings.setupComplete, uiState.settings.lastSystemEventAtMs) {
         currentTimeMs = System.currentTimeMillis()
         while (uiState.settings.setupComplete) {
@@ -327,16 +412,55 @@ private fun LauncherApp(
         }
     }
 
+    LaunchedEffect(
+        uiState.settings.launcherMode,
+        uiState.settings.scheduleDays,
+        uiState.settings.scheduleStartMinutes,
+        uiState.settings.scheduleEndMinutes,
+        currentTimeMs,
+        resumeTick,
+        focusShortcutLaunchTick,
+        uiState.settings.focusSessionActive,
+        uiState.settings.focusSessionAnchor,
+        promptAction,
+    ) {
+        val duePrompt = currentDuePrompt(uiState.settings, currentTimeMs)
+        if (duePrompt == null) {
+            autoPrompt = null
+        } else if (
+            promptAction == null &&
+            (resumeTick != 0L || focusShortcutLaunchTick != 0L) &&
+            autoPrompt != duePrompt
+        ) {
+            autoPrompt = duePrompt
+        }
+    }
+
+    LaunchedEffect(
+        uiState.settings.focusSessionActive,
+        uiState.settings.focusSessionAnchor,
+        uiState.settings.launcherMode,
+        uiState.settings.scheduleDays,
+        uiState.settings.scheduleStartMinutes,
+        uiState.settings.scheduleEndMinutes,
+        currentTimeMs,
+    ) {
+        if (!uiState.settings.focusSessionActive) return@LaunchedEffect
+        val activeWindow = currentScheduledWindow(uiState.settings, currentTimeMs)
+        val recentWindow = mostRecentEndedWindow(uiState.settings, currentTimeMs)
+        val anchor = uiState.settings.focusSessionAnchor
+        val anchorStillRelevant =
+            (activeWindow != null && activeWindow.anchor == anchor) ||
+                (recentWindow != null && recentWindow.anchor == anchor)
+        if (!anchorStillRelevant) {
+            viewModel.setFocusSession(false, null)
+        }
+    }
+
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearError()
-        }
-    }
-
-    LaunchedEffect(effectiveMode, screen) {
-        if (effectiveMode == EffectiveMode.SIMPLE && screen == Screen.APPS) {
-            screen = Screen.HOME
         }
     }
 
@@ -350,10 +474,18 @@ private fun LauncherApp(
         return
     }
 
+    LaunchedEffect(
+        focusShortcutLaunchTick,
+        uiState.settings.setupComplete,
+    ) {
+        if (focusShortcutLaunchTick == 0L || !uiState.settings.setupComplete) return@LaunchedEffect
+        screen = Screen.HOME
+    }
+
     BackHandler {
         screen = when (screen) {
             Screen.HOME -> Screen.HOME
-            Screen.CALLS, Screen.MESSAGES, Screen.APPS, Screen.ADMIN -> Screen.HOME
+            Screen.CALLS, Screen.MESSAGES, Screen.ADMIN -> Screen.HOME
         }
     }
 
@@ -371,10 +503,16 @@ private fun LauncherApp(
             when (screen) {
                 Screen.HOME -> HomeScreen(
                     effectiveMode = effectiveMode,
+                    settings = uiState.settings,
                     onOpenCalls = { screen = Screen.CALLS },
                     onOpenMessages = { screen = Screen.MESSAGES },
-                    onOpenApps = { screen = Screen.APPS },
-                    onOpenAdmin = { showPinPrompt = true },
+                    onOpenAdmin = {
+                        if (uiState.settings.adminPinEnabled) {
+                            showPinPrompt = true
+                        } else {
+                            screen = Screen.ADMIN
+                        }
+                    },
                 )
 
                 Screen.CALLS -> ContactListScreen(
@@ -401,11 +539,6 @@ private fun LauncherApp(
                     onDelete = viewModel::deleteContact,
                 )
 
-                Screen.APPS -> AppsScreen(
-                    apps = appEntries,
-                    onBack = { screen = Screen.HOME },
-                )
-
                 Screen.ADMIN -> AdminScreen(
                     settings = uiState.settings,
                     effectiveMode = effectiveMode,
@@ -416,10 +549,29 @@ private fun LauncherApp(
                     onToggleKiosk = viewModel::setKioskEnabled,
                     onSetLauncherMode = viewModel::setLauncherMode,
                     onSetSchedule = viewModel::setSchedule,
+                    onToggleShowFocusUntilText = viewModel::setShowFocusUntilText,
+                    onToggleScheduleNotificationWarning = viewModel::setWarnIfScheduleNotificationsOff,
+                    onToggleLauncherAppIcon = viewModel::setShowLauncherAppIcon,
+                    onToggleRequireAdminPin = { enabled ->
+                        if (enabled) {
+                            showSetPinDialog = true
+                        } else {
+                            viewModel.setAdminPin(null)
+                        }
+                    },
+                    onAddHomeScreenShortcut = { requestPinnedFocusShortcut(context) },
+                    onOpenNotificationSettings = { SchedulePromptController.openNotificationSettings(context) },
+                    onOpenExactAlarmSettings = { SchedulePromptController.openExactAlarmSettings(context) },
+                    canPostNotifications = SchedulePromptController.canPostNotifications(context),
+                    isFocusSessionActive = uiState.settings.focusSessionActive,
+                    isInsideScheduledWindow = currentScheduledWindow(uiState.settings, currentTimeMs) != null,
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
-                    onOpenHomeSettings = { openHomeSettings(context) },
+                    onOpenHomeSettings = {
+                        viewModel.setFocusSession(false, null)
+                        openHomeSettings(context)
+                    },
                     onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
                     onEnableDeviceAdmin = { requestDeviceAdmin(context) },
                 )
@@ -438,6 +590,54 @@ private fun LauncherApp(
                     } else {
                         Toast.makeText(context, "Incorrect PIN.", Toast.LENGTH_SHORT).show()
                     }
+                }
+            },
+        )
+    }
+
+    if (showSetPinDialog) {
+        SetAdminPinDialog(
+            onDismiss = { showSetPinDialog = false },
+            onSave = { pin ->
+                viewModel.setAdminPin(pin)
+                if (pin.length >= 4) {
+                    showSetPinDialog = false
+                }
+            },
+        )
+    }
+
+    val dialogAction = promptAction ?: autoPrompt?.action
+    dialogAction?.let { action ->
+        PromptActionDialog(
+            action = action,
+            onDismiss = {
+                if (promptAction != null) {
+                    activity.consumePromptAction()
+                } else {
+                    autoPrompt = null
+                }
+            },
+            onConfirm = {
+                when (action) {
+                    PromptAction.ENTER_FOCUS -> {
+                        val anchor = currentScheduledWindow(uiState.settings, System.currentTimeMillis())?.anchor
+                        viewModel.setFocusSession(true, anchor)
+                        if (!isAppDefaultLauncher(context)) {
+                            requestFocusLauncher(activity)
+                        }
+                    }
+                    PromptAction.EXIT_FOCUS -> {
+                        viewModel.setFocusSession(false, null)
+                        if (isAppDefaultLauncher(context)) {
+                            openHomeSettings(context)
+                        }
+                    }
+                }
+                if (promptAction != null) {
+                    activity.consumePromptAction()
+                } else {
+                    autoPrompt = null
                 }
             },
         )
@@ -478,6 +678,8 @@ private fun LauncherApp(
 private data class Diagnostics(
     val batteryPercent: Int,
     val networkSummary: String,
+    val notificationsReady: Boolean,
+    val exactTimingAvailable: Boolean,
     val isDeviceAdminEnabled: Boolean,
     val isLockTaskPermitted: Boolean,
     val isDeviceOwner: Boolean,
@@ -503,6 +705,8 @@ private fun buildDiagnostics(context: Context): Diagnostics {
     return Diagnostics(
         batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
         networkSummary = networkSummary,
+        notificationsReady = SchedulePromptController.canPostNotifications(context),
+        exactTimingAvailable = SchedulePromptController.canScheduleExactAlarms(context),
         isDeviceAdminEnabled = kioskState.isDeviceAdminEnabled,
         isLockTaskPermitted = kioskState.isLockTaskPermitted,
         isDeviceOwner = kioskState.isDeviceOwner,
@@ -537,6 +741,42 @@ private fun openAccessibilitySettings(context: Context) {
     runCatching { context.startActivity(intent) }
 }
 
+private fun setLauncherEntryIconEnabled(context: Context, enabled: Boolean) {
+    val component = ComponentName(context, "com.daveharris.mumlauncher.LauncherEntryAlias")
+    val state = if (enabled) {
+        PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+    } else {
+        PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+    }
+    context.packageManager.setComponentEnabledSetting(
+        component,
+        state,
+        PackageManager.DONT_KILL_APP,
+    )
+}
+
+private fun requestPinnedFocusShortcut(context: Context) {
+    val shortcutManager = context.getSystemService(ShortcutManager::class.java)
+    if (shortcutManager == null || !shortcutManager.isRequestPinShortcutSupported) {
+        Toast.makeText(context, "This launcher does not support pinned shortcuts.", Toast.LENGTH_LONG).show()
+        return
+    }
+    val shortcutIntent = Intent(context, MainActivity::class.java).apply {
+        action = ACTION_OPEN_FOCUS_NOW
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+    val shortcut = ShortcutInfo.Builder(context, "focus_now_shortcut")
+        .setShortLabel("Focus now")
+        .setLongLabel("Open Mum Launcher now")
+        .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
+        .setIntent(shortcutIntent)
+        .build()
+    val accepted = shortcutManager.requestPinShortcut(shortcut, null)
+    if (!accepted) {
+        Toast.makeText(context, "This launcher does not support pinned shortcuts.", Toast.LENGTH_LONG).show()
+    }
+}
+
 private fun launchDialer(context: Context, phoneNumber: String) {
     val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(phoneNumber)}"))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -557,78 +797,22 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
     }
 }
 
-private fun computeEffectiveMode(
-    settings: LauncherSettings,
-    currentTimeMs: Long,
-): EffectiveMode {
-    return when (settings.launcherMode) {
-        LauncherMode.SIMPLE -> EffectiveMode.SIMPLE
-        LauncherMode.NORMAL -> EffectiveMode.NORMAL
-        LauncherMode.SCHEDULED -> {
-            if (isInsideScheduledWindow(settings, currentTimeMs)) {
-                EffectiveMode.SIMPLE
-            } else {
-                EffectiveMode.NORMAL
+private fun requestFocusLauncher(activity: MainActivity) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val roleManager = activity.getSystemService(RoleManager::class.java)
+        if (roleManager != null &&
+            roleManager.isRoleAvailable(RoleManager.ROLE_HOME) &&
+            !roleManager.isRoleHeld(RoleManager.ROLE_HOME)
+        ) {
+            runCatching {
+                activity.startActivity(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
+            }.onFailure {
+                openHomeSettings(activity)
             }
+            return
         }
     }
-}
-
-private fun isInsideScheduledWindow(settings: LauncherSettings, currentTimeMs: Long): Boolean {
-    val calendar = Calendar.getInstance().apply { timeInMillis = currentTimeMs }
-    val today = calendar.get(Calendar.DAY_OF_WEEK)
-    val nowMinutes = calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
-    val start = settings.scheduleStartMinutes
-    val end = settings.scheduleEndMinutes
-
-    if (start == end) return settings.scheduleDays.contains(today)
-
-    return if (start < end) {
-        settings.scheduleDays.contains(today) && nowMinutes in start until end
-    } else {
-        val previousDay = if (today == Calendar.SUNDAY) Calendar.SATURDAY else today - 1
-        (settings.scheduleDays.contains(today) && nowMinutes >= start) ||
-            (settings.scheduleDays.contains(previousDay) && nowMinutes < end)
-    }
-}
-
-private fun loadLaunchableApps(context: Context, kioskEnabled: Boolean): List<AppEntry> {
-    val packageManager = context.packageManager
-    val kioskState = KioskController.getState(context)
-    val baseIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-    val resolvedApps = packageManager.queryIntentActivities(baseIntent, PackageManager.MATCH_ALL)
-
-    return resolvedApps
-        .asSequence()
-        .filterNot { it.activityInfo.packageName == context.packageName }
-        .map { resolveInfo ->
-            val packageName = resolveInfo.activityInfo.packageName
-            val launchIntent = Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LAUNCHER)
-                .setClassName(packageName, resolveInfo.activityInfo.name)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            val isAvailableInCurrentMode = !kioskEnabled ||
-                !kioskState.isDeviceOwner ||
-                isPackageAllowedInLockTask(context, packageName)
-            AppEntry(
-                label = resolveInfo.loadLabel(packageManager).toString(),
-                packageName = packageName,
-                launchIntent = launchIntent,
-                isAvailableInCurrentMode = isAvailableInCurrentMode,
-            )
-        }
-        .filter { it.isAvailableInCurrentMode || !kioskEnabled }
-        .sortedBy { it.label.lowercase() }
-        .toList()
-}
-
-private fun isPackageAllowedInLockTask(context: Context, packageName: String): Boolean {
-    val policyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-    return runCatching { policyManager.isLockTaskPermitted(packageName) }.getOrDefault(false)
-}
-
-private fun launchApp(context: Context, appEntry: AppEntry) {
-    launchExternalIntent(context, appEntry.launchIntent, "This app is not available right now.")
+    openHomeSettings(activity)
 }
 
 private fun formatTimeLabel(context: Context, minutes: Int): String {
@@ -654,13 +838,12 @@ private fun describeDays(days: Set<Int>): String {
 
 private fun modeLabel(mode: LauncherMode): String = when (mode) {
     LauncherMode.SIMPLE -> "Simple"
-    LauncherMode.NORMAL -> "Full Access"
     LauncherMode.SCHEDULED -> "Scheduled"
 }
 
 private fun effectiveModeLabel(mode: EffectiveMode): String = when (mode) {
     EffectiveMode.SIMPLE -> "Simple"
-    EffectiveMode.NORMAL -> "Full Access"
+    EffectiveMode.REGULAR -> "Regular launcher"
 }
 
 @Composable
@@ -688,7 +871,7 @@ private fun SetupScreen(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "Use this screen once, before handing over the phone. Android treats this as a Home app, not a normal app, so it must be chosen in Home settings.",
+            text = "Use this screen once, before handing over the phone. Android treats this as a Home app, not a normal app, so it must be chosen in Home settings. Admin PIN is optional.",
             color = Color.White.copy(alpha = 0.9f),
             fontSize = 18.sp,
         )
@@ -716,7 +899,7 @@ private fun SetupScreen(
                 value = pin,
                 onValueChange = { pin = it.filter(Char::isDigit).take(8) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Admin PIN") },
+                label = { Text("Admin PIN (optional)") },
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
             )
@@ -763,9 +946,9 @@ private fun SetupStepCard(
 @Composable
 private fun HomeScreen(
     effectiveMode: EffectiveMode,
+    settings: LauncherSettings,
     onOpenCalls: () -> Unit,
     onOpenMessages: () -> Unit,
-    onOpenApps: () -> Unit,
     onOpenAdmin: () -> Unit,
 ) {
     var tapCount by remember { mutableIntStateOf(0) }
@@ -846,17 +1029,25 @@ private fun HomeScreen(
                 color = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenMessages,
             )
-            if (effectiveMode == EffectiveMode.NORMAL) {
-                HomeActionButton(
-                    label = "Apps",
-                    icon = Icons.Outlined.Apps,
-                    color = MaterialTheme.colorScheme.tertiary,
-                    onClick = onOpenApps,
-                )
-            }
         }
 
-        Spacer(modifier = Modifier.weight(1.15f))
+        Spacer(modifier = Modifier.weight(0.55f))
+        if (
+            settings.showFocusUntilText &&
+            settings.launcherMode == LauncherMode.SCHEDULED &&
+            effectiveMode == EffectiveMode.SIMPLE
+        ) {
+            Text(
+                text = "Focus mode until ${formatTimeLabel(LocalContext.current, settings.scheduleEndMinutes)}",
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                fontSize = 16.sp,
+                lineHeight = 20.sp,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+        Spacer(modifier = Modifier.weight(0.6f))
     }
 }
 
@@ -902,81 +1093,6 @@ private fun HomeActionButton(
                         modifier = Modifier.size(32.dp),
                         tint = Color.White,
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AppsScreen(
-    apps: List<AppEntry>,
-    onBack: () -> Unit,
-) {
-    val context = LocalContext.current
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("Back") }
-            Text(
-                text = "Apps",
-                modifier = Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(modifier = Modifier.size(70.dp))
-        }
-
-        if (apps.isEmpty()) {
-            Card {
-                Text(
-                    text = "No additional apps are available in the current mode.",
-                    modifier = Modifier.padding(24.dp),
-                    fontSize = 20.sp,
-                )
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(apps, key = { it.packageName }) { app ->
-                    Card(
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(20.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = app.label,
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    text = app.packageName,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                )
-                            }
-                            FilledTonalButton(
-                                onClick = { launchApp(context, app) },
-                                enabled = app.isAvailableInCurrentMode,
-                            ) {
-                                Text("Open")
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1111,6 +1227,16 @@ private fun AdminScreen(
     onToggleKiosk: (Boolean) -> Unit,
     onSetLauncherMode: (LauncherMode) -> Unit,
     onSetSchedule: (Set<Int>, Int, Int) -> Unit,
+    onToggleShowFocusUntilText: (Boolean) -> Unit,
+    onToggleScheduleNotificationWarning: (Boolean) -> Unit,
+    onToggleLauncherAppIcon: (Boolean) -> Unit,
+    onToggleRequireAdminPin: (Boolean) -> Unit,
+    onAddHomeScreenShortcut: () -> Unit,
+    isFocusSessionActive: Boolean,
+    isInsideScheduledWindow: Boolean,
+    canPostNotifications: Boolean,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenExactAlarmSettings: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
@@ -1145,14 +1271,110 @@ private fun AdminScreen(
                     "Current active mode: ${effectiveModeLabel(effectiveMode)}",
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )
+                Text(
+                    "Simple keeps this launcher on screen. Scheduled sends prompts at the start and end of focus time. Returning to your regular launcher stays manual from Home settings.",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                    lineHeight = 20.sp,
+                )
+                Text(
+                    "Focus session active: ${if (isFocusSessionActive) "Yes" else "No"}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                )
+                Text(
+                    "Inside scheduled focus window now: ${if (isInsideScheduledWindow) "Yes" else "No"}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                )
+                Text(
+                    "Notifications ready: ${if (diagnostics.notificationsReady) "Yes" else "No"}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                )
+                Text(
+                    "Exact timing available: ${if (diagnostics.exactTimingAvailable) "Yes" else "No"}",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                )
                 ModeSelector(
                     selectedMode = settings.launcherMode,
                     onSelectMode = onSetLauncherMode,
                 )
+                ToggleCard(
+                    title = "Require PIN for admin",
+                    checked = settings.adminPinEnabled,
+                    onCheckedChange = onToggleRequireAdminPin,
+                )
+                ToggleCard(
+                    title = "Show app icon in the app drawer",
+                    checked = settings.showLauncherAppIcon,
+                    onCheckedChange = onToggleLauncherAppIcon,
+                )
+                FilledTonalButton(onClick = onAddHomeScreenShortcut) {
+                    Text("Add focus shortcut to home screen")
+                }
                 FilledTonalButton(onClick = onOpenHomeSettings) {
                     Text("Revert to normal launcher")
                 }
                 if (settings.launcherMode == LauncherMode.SCHEDULED) {
+                    ToggleCard(
+                        title = "Warn if schedule notifications are off",
+                        checked = settings.warnIfScheduleNotificationsOff,
+                        onCheckedChange = onToggleScheduleNotificationWarning,
+                    )
+                    if (!canPostNotifications && settings.warnIfScheduleNotificationsOff) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                            ),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    "Scheduled focus needs notifications turned on",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                                Text(
+                                    "Android notifications are turned off or not prominent enough for Mum Launcher, so scheduled prompts may be easy to miss.",
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                                FilledTonalButton(onClick = onOpenNotificationSettings) {
+                                    Text("Open notification settings")
+                                }
+                            }
+                        }
+                    }
+                    if (!diagnostics.exactTimingAvailable) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                            ),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    "Exact timing is not available",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                                Text(
+                                    "Scheduled prompts still work, but prompt times may drift significantly without exact alarms.",
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                                FilledTonalButton(onClick = onOpenExactAlarmSettings) {
+                                    Text("Open alarm timing settings")
+                                }
+                            }
+                        }
+                    }
+                    ToggleCard(
+                        title = "Show \"Focus mode until...\" on the home screen",
+                        checked = settings.showFocusUntilText,
+                        onCheckedChange = onToggleShowFocusUntilText,
+                    )
                     ScheduleEditor(
                         selectedDays = settings.scheduleDays,
                         startMinutes = settings.scheduleStartMinutes,
@@ -1164,7 +1386,7 @@ private fun AdminScreen(
         }
 
         ToggleCard(
-            title = "Allow contact editing in full access mode",
+            title = "Allow contact editing while using this launcher",
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
@@ -1179,6 +1401,8 @@ private fun AdminScreen(
                 Text("Diagnostics", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                 Text("Battery: ${diagnostics.batteryPercent}%")
                 Text("Network: ${diagnostics.networkSummary}")
+                Text("Notifications ready: ${if (diagnostics.notificationsReady) "Yes" else "No"}")
+                Text("Exact timing available: ${if (diagnostics.exactTimingAvailable) "Yes" else "No"}")
                 Text("Device admin: ${if (diagnostics.isDeviceAdminEnabled) "Enabled" else "Not enabled"}")
                 Text("Device owner: ${if (diagnostics.isDeviceOwner) "Enabled" else "Not enabled"}")
                 Text("Lock task allowed: ${if (diagnostics.isLockTaskPermitted) "Yes" else "No"}")
@@ -1335,6 +1559,40 @@ private fun showTimePicker(
 }
 
 @Composable
+private fun PromptActionDialog(
+    action: PromptAction,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val title = when (action) {
+        PromptAction.ENTER_FOCUS -> "Focus time starting"
+        PromptAction.EXIT_FOCUS -> "Focus time ended"
+    }
+    val body = when (action) {
+        PromptAction.ENTER_FOCUS ->
+            "Switch to Mum Launcher now. Android may ask you to confirm the Home app change."
+        PromptAction.EXIT_FOCUS ->
+            "Focus time has ended. Leave focus mode now. If Mum Launcher is your current Home app, Android will open Home settings so you can switch back."
+    }
+    val confirm = when (action) {
+        PromptAction.ENTER_FOCUS -> "Switch now"
+        PromptAction.EXIT_FOCUS -> "Leave focus now"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(confirm) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Later") }
+        },
+    )
+}
+
+@Composable
 private fun ToggleCard(
     title: String,
     checked: Boolean,
@@ -1384,6 +1642,40 @@ private fun PinPromptDialog(
         },
         confirmButton = {
             TextButton(onClick = { onSubmit(pin) }) { Text("Open") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun SetAdminPinDialog(
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var pin by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Set admin PIN") },
+        text = {
+            Column(
+                modifier = Modifier.imePadding(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Enter a PIN with at least 4 digits. Leave admin PIN off if triple-tap security is enough.")
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { pin = it.filter(Char::isDigit).take(8) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("PIN") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(pin) }) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
