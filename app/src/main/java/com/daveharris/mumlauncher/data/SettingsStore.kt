@@ -18,12 +18,12 @@ private val Context.settingsDataStore by preferencesDataStore(name = "settings")
 
 enum class LauncherMode {
     SIMPLE,
-    NORMAL,
     SCHEDULED,
 }
 
 data class LauncherSettings(
     val pinHash: String? = null,
+    val adminPinEnabled: Boolean = false,
     val allowUserContactEditing: Boolean = true,
     val kioskEnabled: Boolean = false,
     val setupComplete: Boolean = false,
@@ -31,12 +31,18 @@ data class LauncherSettings(
     val scheduleDays: Set<Int> = setOf(2, 3, 4, 5, 6),
     val scheduleStartMinutes: Int = 9 * 60,
     val scheduleEndMinutes: Int = 17 * 60,
+    val showFocusUntilText: Boolean = false,
+    val warnIfScheduleNotificationsOff: Boolean = true,
+    val showLauncherAppIcon: Boolean = false,
+    val focusSessionActive: Boolean = false,
+    val focusSessionAnchor: String? = null,
     val lastSystemEventAtMs: Long = 0L,
 )
 
 class SettingsStore(private val context: Context) {
     private object Keys {
         val pinHash = stringPreferencesKey("pin_hash")
+        val adminPinEnabled = booleanPreferencesKey("admin_pin_enabled")
         val allowUserContactEditing = booleanPreferencesKey("allow_user_contact_editing")
         val kioskEnabled = booleanPreferencesKey("kiosk_enabled")
         val setupComplete = booleanPreferencesKey("setup_complete")
@@ -44,6 +50,11 @@ class SettingsStore(private val context: Context) {
         val scheduleDays = stringPreferencesKey("schedule_days")
         val scheduleStartMinutes = intPreferencesKey("schedule_start_minutes")
         val scheduleEndMinutes = intPreferencesKey("schedule_end_minutes")
+        val showFocusUntilText = booleanPreferencesKey("show_focus_until_text")
+        val warnIfScheduleNotificationsOff = booleanPreferencesKey("warn_if_schedule_notifications_off")
+        val showLauncherAppIcon = booleanPreferencesKey("show_launcher_app_icon")
+        val focusSessionActive = booleanPreferencesKey("focus_session_active")
+        val focusSessionAnchor = stringPreferencesKey("focus_session_anchor")
         val lastSystemEventAtMs = longPreferencesKey("last_system_event_at_ms")
     }
 
@@ -54,6 +65,7 @@ class SettingsStore(private val context: Context) {
         .map { prefs: Preferences ->
             LauncherSettings(
                 pinHash = prefs[Keys.pinHash],
+                adminPinEnabled = prefs[Keys.adminPinEnabled] ?: (prefs[Keys.pinHash] != null),
                 allowUserContactEditing = prefs[Keys.allowUserContactEditing] ?: true,
                 kioskEnabled = prefs[Keys.kioskEnabled] ?: false,
                 setupComplete = prefs[Keys.setupComplete] ?: false,
@@ -63,12 +75,25 @@ class SettingsStore(private val context: Context) {
                 scheduleDays = decodeDays(prefs[Keys.scheduleDays]),
                 scheduleStartMinutes = prefs[Keys.scheduleStartMinutes] ?: 9 * 60,
                 scheduleEndMinutes = prefs[Keys.scheduleEndMinutes] ?: 17 * 60,
+                showFocusUntilText = prefs[Keys.showFocusUntilText] ?: false,
+                warnIfScheduleNotificationsOff = prefs[Keys.warnIfScheduleNotificationsOff] ?: true,
+                showLauncherAppIcon = prefs[Keys.showLauncherAppIcon] ?: false,
+                focusSessionActive = prefs[Keys.focusSessionActive] ?: false,
+                focusSessionAnchor = prefs[Keys.focusSessionAnchor],
                 lastSystemEventAtMs = prefs[Keys.lastSystemEventAtMs] ?: 0L,
             )
         }
 
-    suspend fun setPinHash(hash: String) {
-        context.settingsDataStore.edit { it[Keys.pinHash] = hash }
+    suspend fun configureAdminPin(pinHash: String?) {
+        context.settingsDataStore.edit {
+            if (pinHash == null) {
+                it[Keys.adminPinEnabled] = false
+                it.remove(Keys.pinHash)
+            } else {
+                it[Keys.adminPinEnabled] = true
+                it[Keys.pinHash] = pinHash
+            }
+        }
     }
 
     suspend fun setAllowUserContactEditing(allowed: Boolean) {
@@ -97,6 +122,29 @@ class SettingsStore(private val context: Context) {
 
     suspend fun markSystemEvent(timestampMs: Long) {
         context.settingsDataStore.edit { it[Keys.lastSystemEventAtMs] = timestampMs }
+    }
+
+    suspend fun setShowFocusUntilText(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.showFocusUntilText] = enabled }
+    }
+
+    suspend fun setWarnIfScheduleNotificationsOff(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.warnIfScheduleNotificationsOff] = enabled }
+    }
+
+    suspend fun setShowLauncherAppIcon(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.showLauncherAppIcon] = enabled }
+    }
+
+    suspend fun setFocusSession(active: Boolean, anchor: String?) {
+        context.settingsDataStore.edit {
+            it[Keys.focusSessionActive] = active
+            if (anchor == null) {
+                it.remove(Keys.focusSessionAnchor)
+            } else {
+                it[Keys.focusSessionAnchor] = anchor
+            }
+        }
     }
 
     companion object {
