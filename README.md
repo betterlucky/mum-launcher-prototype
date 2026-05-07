@@ -1,24 +1,61 @@
-# Mum Launcher Prototype
+# Mum Launcher
 
-Minimal Android launcher for a simplified phone setup.
+An Android launcher built around one real problem: smartphones are too complicated for some people, and the people who look after them need an easy way to hand the phone back to normal.
 
-It was built for a real single-user accessibility scenario, but the code is intentionally generic enough to reuse, adapt, and learn from.
+The app has three layers:
 
-## Who this is for
+- **Simple mode** — a large-button home screen with only Calls and Messages. This is what the person being supported sees.
+- **Standard mode** — a curated app grid for scheduled off-session time. Not yet built.
+- **Native launcher** — one tap in admin hands the phone back to the original launcher for full use. Home always returns to Mum Launcher.
 
-This repo is for people who want:
+## Current state
 
-- a very simple Android launcher with only a couple of obvious actions
-- a codebase to borrow from for kiosk or accessibility-oriented launcher work
-- a practical prototype rather than a broad commercial launcher product
+Simple mode is complete and functional. Standard mode and scheduling are next. Tested on a Motorola Moto G85 running Android 15.
 
-## What it does
+The app name is under discussion — working name is **Dial It Back**.
 
-- Replaces the normal Android home screen with a two-button launcher.
-- Keeps contacts local to the app.
+## What it does now
+
+- Replaces the Android home screen. Home button always returns here.
+- Shows Calls and Messages on the home screen with large, obvious buttons.
+- Stores contacts locally inside the app.
 - Uses the system Phone and Messages apps for actual call/SMS handling.
-- Hides admin access behind a PIN-protected flow.
-- Supports best-effort kiosk mode when the app is device owner.
+- Admin area behind a PIN (triple-tap the cog). No PIN required until one is set.
+- Detects the previous default launcher during setup and stores it.
+- Admin can hand the phone back to the native launcher in one tap.
+- Pins a home screen shortcut during setup so carers can return easily.
+
+## Local setup
+
+1. Install JDK 17.
+2. Install Android Studio (or just the Android SDK command-line tools).
+3. Enable Developer Options and USB debugging on the target phone.
+
+If you prefer the terminal:
+
+```bash
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
+
+Then build and install:
+
+```bash
+./gradlew installDebug
+```
+
+To clear app data for a fresh setup run:
+
+```bash
+adb shell pm clear com.daveharris.mumlauncher
+```
+
+## Build outputs
+
+- Debug APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Release APK: `app/build/outputs/apk/release/app-release.apk`
+
+The release build is signed with the debug keystore for convenience. Replace that before any store distribution.
 
 ## Screenshots
 
@@ -26,115 +63,8 @@ This repo is for people who want:
 | --- | --- | --- |
 | ![Launcher](docs/screenshots/launcher.png) | ![Calls](docs/screenshots/calls.png) | ![Messages](docs/screenshots/messages.png) |
 
-## Current state
-
-- Tested on a Motorola Moto G31 running Android 12.
-- Intended as a practical prototype rather than a finished store-ready product.
-- Focused on one calm, low-friction interaction model rather than broad Android compatibility.
-- Suitable for open-source reuse, with device-specific kiosk caveats.
-
-## Local setup
-
-1. Install JDK 17.
-2. Install Android Studio.
-3. Install Android platform tools.
-4. Open the project in Android Studio once so it can install SDK Platform 35 and the required build tools.
-5. Enable Developer Options and USB debugging on the target phone.
-
-If you prefer terminal-only setup, make sure:
-
-- `JAVA_HOME` points to a JDK 17 installation
-- `ANDROID_HOME` or `ANDROID_SDK_ROOT` points to a valid Android SDK
-- `adb` is on `PATH`
-
-Then build with:
-
-```bash
-./gradlew assembleDebug
-```
-
-If Java is installed through Homebrew, this works well on Apple Silicon Macs:
-
-```bash
-export JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
-export PATH="$JAVA_HOME/bin:$PATH"
-```
-
-## Build outputs
-
-- Debug APK:
-  - `app/build/outputs/apk/debug/app-debug.apk`
-- Local release APK:
-  - `app/build/outputs/apk/release/app-release.apk`
-
-Build a local release APK with:
-
-```bash
-./gradlew assembleRelease
-```
-
-The current release build is signed with the local debug keystore so it can be installed easily during prototyping. Replace that signing setup before any Play Store or wider public distribution.
-
-## Install on a device
-
-```bash
-adb install -r "app/build/outputs/apk/debug/app-debug.apk"
-```
-
-Or for the local release build:
-
-```bash
-adb install -r "app/build/outputs/apk/release/app-release.apk"
-```
-
-## Using the app
-
-1. Install the APK.
-2. Set `Mum Launcher` as the default Home app.
-3. Complete the one-time setup flow.
-4. Add the contacts you want available.
-5. Triple-tap the small cog to open admin when needed.
-
-## Kiosk and device-owner notes
-
-- Set the app as the default Home app from Android Home settings.
-- Enable device admin from the setup flow if prompted.
-- For stronger lockdown, provision the app as device owner.
-- Keep ADB enabled while prototyping so you can recover from kiosk misconfiguration.
-- After provisioning device owner, enable `Kiosk mode enabled` in admin.
-
-Example command:
-
-```bash
-adb shell dpm set-device-owner com.joebloggs.mumlauncher/.MumDeviceAdminReceiver
-```
-
-## Device support and limitations
-
-- Basic launcher behavior should be portable.
-- Kiosk behavior is not guaranteed to be identical across manufacturers.
-- This repository currently treats the Moto G31 on Android 12 as the reference device.
-
-See [SUPPORTED_DEVICES.md](/Users/joebloggs/Documents/New%20project/SUPPORTED_DEVICES.md).
-
 ## Privacy
 
-Contacts and settings are stored locally on the device. The app does not include analytics, accounts, or cloud sync.
+Contacts and settings are stored locally on the device. No analytics, accounts, or cloud sync.
 
-See [PRIVACY.md](/Users/joebloggs/Documents/New%20project/PRIVACY.md).
-
-## Known issues and future improvements
-
-- Kiosk behavior is handset-specific. Some phones may still show transient system bars or different navigation affordances even when lock task and device-owner policies are active.
-- The app currently relies on the system Phone and Messages apps rather than owning the full call/SMS experience.
-- Contacts are local-only and do not sync or back up anywhere.
-- The release build is currently signed with the debug keystore for convenience, which is fine for local installs but not ideal for broader distribution.
-- The package name and branding are still prototype-oriented rather than fully generic.
-
-Potential future improvements:
-
-- add a proper user-owned release signing setup
-- test and document more Android versions and phone models
-- add import/export or backup for local contacts and settings
-- optionally support a stricter admin-only contact editing mode by default
-- refine the kiosk experience further for supported OEMs
+See [PRIVACY.md](PRIVACY.md).

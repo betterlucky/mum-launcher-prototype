@@ -21,6 +21,11 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        buildConfigField("boolean", "DEBUG", "false")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

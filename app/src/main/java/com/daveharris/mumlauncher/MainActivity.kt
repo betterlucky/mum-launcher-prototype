@@ -1,8 +1,10 @@
 package com.daveharris.mumlauncher
 
-import android.app.admin.DevicePolicyManager
+import android.content.pm.PackageManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
 import android.content.ActivityNotFoundException
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -88,6 +90,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.daveharris.mumlauncher.BuildConfig
 import com.daveharris.mumlauncher.data.Contact
 import com.daveharris.mumlauncher.data.ContactRepository
 import com.daveharris.mumlauncher.data.LauncherSettings
@@ -100,6 +103,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 private enum class Screen {
     HOME,
@@ -152,16 +158,44 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         }
     }
 
+    private var failedPinAttempts = 0
+    private var pinLockedUntil = 0L
+
     fun verifyPin(pin: String, onResult: (Boolean) -> Unit) {
-        onResult(hashPin(pin) == uiState.value.settings.pinHash)
+        if (uiState.value.settings.pinHash == null) {
+            onResult(true)
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now < pinLockedUntil) {
+            val remainingSecs = ((pinLockedUntil - now) / 1000).coerceAtLeast(1)
+            transientError.value = "Too many attempts. Try again in ${remainingSecs}s."
+            onResult(false)
+            return
+        }
+        val valid = verifyPinHash(pin, uiState.value.settings.pinHash)
+        if (valid) {
+            failedPinAttempts = 0
+            pinLockedUntil = 0L
+            onResult(true)
+        } else {
+            failedPinAttempts++
+            val lockMs = when {
+                failedPinAttempts >= 9 -> 5 * 60 * 1000L
+                failedPinAttempts >= 6 -> 30 * 1000L
+                failedPinAttempts >= 3 -> 5 * 1000L
+                else -> 0L
+            }
+            if (lockMs > 0) {
+                pinLockedUntil = now + lockMs
+                transientError.value = "Incorrect PIN. Locked for ${lockMs / 1000}s."
+            }
+            onResult(false)
+        }
     }
 
     fun setAllowUserEditing(allowed: Boolean) {
         viewModelScope.launch { settingsStore.setAllowUserContactEditing(allowed) }
-    }
-
-    fun setKioskEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsStore.setKioskEnabled(enabled) }
     }
 
     fun addContact(name: String, phoneNumber: String) {
@@ -186,9 +220,46 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { contactRepository.delete(contact) }
     }
 
+    fun saveNativeLauncherIfNeeded(context: Context) {
+        if (uiState.value.settings.nativeLauncherPackage != null) return
+        val info = detectNativeLauncher(context) ?: return
+        viewModelScope.launch { settingsStore.setNativeLauncher(info.first, info.second) }
+    }
+
+    private val _diagnostics = MutableStateFlow<Diagnostics?>(null)
+    internal val diagnostics: StateFlow<Diagnostics?> = _diagnostics
+
+    fun refreshDiagnostics() {
+        _diagnostics.value = buildDiagnosticsFromApp(getApplication())
+    }
+
     private fun hashPin(pin: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(pin.toByteArray()).joinToString("") { "%02x".format(it) }
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val saltHex = salt.joinToString("") { "%02x".format(it) }
+        return "$saltHex:${pbkdf2Hash(pin, salt)}"
+    }
+
+    private fun verifyPinHash(pin: String, stored: String?): Boolean {
+        if (stored == null) return false
+        return if (':' in stored) {
+            val colonIdx = stored.indexOf(':')
+            val saltHex = stored.substring(0, colonIdx)
+            val expectedHash = stored.substring(colonIdx + 1)
+            val salt = saltHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            pbkdf2Hash(pin, salt) == expectedHash
+        } else {
+            // Legacy SHA-256 fallback for existing installs
+            MessageDigest.getInstance("SHA-256")
+                .digest(pin.toByteArray())
+                .joinToString("") { "%02x".format(it) } == stored
+        }
+    }
+
+    private fun pbkdf2Hash(pin: String, salt: ByteArray): String {
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 100_000, 256)
+        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            .generateSecret(spec).encoded
+            .joinToString("") { "%02x".format(it) }
     }
 }
 
@@ -250,23 +321,13 @@ private fun LauncherApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val diagnostics by viewModel.diagnostics.collectAsState()
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
 
-    LaunchedEffect(uiState.settings.kioskEnabled, uiState.settings.setupComplete) {
-        activity.hideSystemUi()
-        val kioskState = KioskController.syncKioskPolicy(
-            context,
-            uiState.settings.kioskEnabled && uiState.settings.setupComplete,
-        )
-        if (uiState.settings.kioskEnabled && uiState.settings.setupComplete && kioskState.isLockTaskPermitted) {
-            runCatching { activity.startLockTask() }
-        } else {
-            runCatching { activity.stopLockTask() }
-        }
-    }
+    LaunchedEffect(Unit) { activity.hideSystemUi() }
 
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
@@ -275,11 +336,18 @@ private fun LauncherApp(
         }
     }
 
+    if (!uiState.settings.setupComplete && BuildConfig.DEBUG) {
+        LaunchedEffect(Unit) { requestPinShortcut(context) }
+    }
+
     if (!uiState.settings.setupComplete) {
         BackHandler {}
         SetupScreen(
-            onOpenHomeSettings = { openHomeSettings(context) },
-            onEnableDeviceAdmin = { requestDeviceAdmin(context) },
+            onOpenHomeSettings = {
+                viewModel.saveNativeLauncherIfNeeded(context)
+                openHomeSettings(context)
+            },
+            onPinShortcut = { requestPinShortcut(context) },
             onFinishSetup = { pin -> viewModel.completeSetup(pin) },
         )
         return
@@ -334,20 +402,24 @@ private fun LauncherApp(
                     onDelete = viewModel::deleteContact,
                 )
 
-                Screen.ADMIN -> AdminScreen(
+                Screen.ADMIN -> {
+                    LaunchedEffect(Unit) { viewModel.refreshDiagnostics() }
+                    AdminScreen(
                     settings = uiState.settings,
                     contacts = uiState.contacts,
-                    diagnostics = buildDiagnostics(context),
+                    diagnostics = diagnostics,
                     onBack = { screen = Screen.HOME },
                     onToggleEditing = viewModel::setAllowUserEditing,
-                    onToggleKiosk = viewModel::setKioskEnabled,
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
+                    onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
+                        { openNativeLauncher(context, pkg) }
+                    },
                     onOpenHomeSettings = { openHomeSettings(context) },
                     onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
-                    onEnableDeviceAdmin = { requestDeviceAdmin(context) },
                 )
+                }
             }
         }
     }
@@ -400,18 +472,14 @@ private fun LauncherApp(
     }
 }
 
-private data class Diagnostics(
+internal data class Diagnostics(
     val batteryPercent: Int,
     val networkSummary: String,
-    val isDeviceAdminEnabled: Boolean,
-    val isLockTaskPermitted: Boolean,
-    val isDeviceOwner: Boolean,
     val dialerPackage: String?,
     val smsPackage: String?,
-    val allowlistedPackages: List<String>,
 )
 
-private fun buildDiagnostics(context: Context): Diagnostics {
+private fun buildDiagnosticsFromApp(context: Context): Diagnostics {
     val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
     val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val capabilities = runCatching {
@@ -424,29 +492,29 @@ private fun buildDiagnostics(context: Context): Diagnostics {
         capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobile data connected"
         else -> "Connected"
     }
-    val kioskState = KioskController.getState(context)
+    val pm = context.packageManager
+    val dialerPackage = Intent(Intent.ACTION_DIAL)
+        .let { pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY) }
+        ?.activityInfo?.packageName
+    val smsPackage = Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:"))
+        .let { pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY) }
+        ?.activityInfo?.packageName
     return Diagnostics(
         batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
         networkSummary = networkSummary,
-        isDeviceAdminEnabled = kioskState.isDeviceAdminEnabled,
-        isLockTaskPermitted = kioskState.isLockTaskPermitted,
-        isDeviceOwner = kioskState.isDeviceOwner,
-        dialerPackage = kioskState.dialerPackage,
-        smsPackage = kioskState.smsPackage,
-        allowlistedPackages = kioskState.allowlistedPackages,
+        dialerPackage = dialerPackage,
+        smsPackage = smsPackage,
     )
 }
 
-private fun requestDeviceAdmin(context: Context) {
-    val adminComponent = ComponentName(context, MumDeviceAdminReceiver::class.java)
-    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-        putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-        putExtra(
-            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-            "Enable device admin to prepare kiosk mode and support access.",
-        )
-    }
-    context.startActivity(intent)
+private fun detectNativeLauncher(context: Context): Pair<String, String>? {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+    val info = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        ?: return null
+    val pkg = info.activityInfo.packageName
+    if (pkg == context.packageName || pkg == "android") return null
+    val label = info.loadLabel(context.packageManager).toString()
+    return Pair(pkg, label)
 }
 
 private fun openHomeSettings(context: Context) {
@@ -455,6 +523,33 @@ private fun openHomeSettings(context: Context) {
         .onFailure {
             Toast.makeText(context, "Home app settings are not available on this phone.", Toast.LENGTH_LONG).show()
         }
+}
+
+private fun requestPinShortcut(context: Context) {
+    val sm = context.getSystemService(ShortcutManager::class.java)
+    if (!sm.isRequestPinShortcutSupported) {
+        Toast.makeText(context, "This launcher doesn't support pinned shortcuts.", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val shortcut = ShortcutInfo.Builder(context, "main_shortcut")
+        .setShortLabel(context.getString(R.string.app_name))
+        .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
+        .setIntent(Intent(context, MainActivity::class.java).apply { action = Intent.ACTION_MAIN })
+        .build()
+    sm.requestPinShortcut(shortcut, null)
+}
+
+private fun openNativeLauncher(context: Context, packageName: String) {
+    val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent != null) {
+        runCatching { context.startActivity(intent) }
+            .onFailure {
+                Toast.makeText(context, "Could not open the previous launcher.", Toast.LENGTH_SHORT).show()
+            }
+    } else {
+        Toast.makeText(context, "Previous launcher is no longer installed.", Toast.LENGTH_SHORT).show()
+    }
 }
 
 private fun openAccessibilitySettings(context: Context) {
@@ -485,7 +580,7 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
 @Composable
 private fun SetupScreen(
     onOpenHomeSettings: () -> Unit,
-    onEnableDeviceAdmin: () -> Unit,
+    onPinShortcut: () -> Unit,
     onFinishSetup: (String) -> Unit,
 ) {
     var pin by rememberSaveable { mutableStateOf("") }
@@ -518,10 +613,10 @@ private fun SetupScreen(
             onAction = onOpenHomeSettings,
         )
         SetupStepCard(
-            title = "2. Enable device admin",
-            body = "Best effort for kiosk support. Full device-owner lockdown still needs ADB provisioning on a clean device.",
-            actionLabel = "Enable Device Admin",
-            onAction = onEnableDeviceAdmin,
+            title = "2. Pin to home screen",
+            body = "Adds a shortcut to the home screen so carers and family can get back here easily.",
+            actionLabel = "Pin shortcut",
+            onAction = onPinShortcut,
         )
         SetupStepCard(
             title = "3. Note prototype permissions",
@@ -788,6 +883,20 @@ private fun ContactCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete contact") },
+            text = { Text("Delete ${contact.displayName}?") },
+            confirmButton = {
+                TextButton(onClick = { onDelete(); showDeleteConfirm = false }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
     Card(
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -825,7 +934,7 @@ private fun ContactCard(
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Outlined.Edit, contentDescription = "Edit")
                     }
-                    IconButton(onClick = onDelete) {
+                    IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Outlined.Delete, contentDescription = "Delete")
                     }
                 }
@@ -838,16 +947,15 @@ private fun ContactCard(
 private fun AdminScreen(
     settings: LauncherSettings,
     contacts: List<Contact>,
-    diagnostics: Diagnostics,
+    diagnostics: Diagnostics?,
     onBack: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
-    onToggleKiosk: (Boolean) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
+    onUsePhoneNormally: (() -> Unit)?,
     onOpenHomeSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onEnableDeviceAdmin: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -874,25 +982,31 @@ private fun AdminScreen(
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
-        ToggleCard(
-            title = "Kiosk mode enabled",
-            checked = settings.kioskEnabled,
-            onCheckedChange = onToggleKiosk,
-        )
+        if (onUsePhoneNormally != null) {
+            val launcherLabel = settings.nativeLauncherLabel ?: "previous launcher"
+            Button(
+                onClick = onUsePhoneNormally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp),
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Text("Use phone normally (open $launcherLabel)", fontSize = 18.sp)
+            }
+        }
 
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Diagnostics", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("Battery: ${diagnostics.batteryPercent}%")
-                Text("Network: ${diagnostics.networkSummary}")
-                Text("Device admin: ${if (diagnostics.isDeviceAdminEnabled) "Enabled" else "Not enabled"}")
-                Text("Device owner: ${if (diagnostics.isDeviceOwner) "Enabled" else "Not enabled"}")
-                Text("Lock task allowed: ${if (diagnostics.isLockTaskPermitted) "Yes" else "No"}")
-                Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
-                Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
-                Text("Kiosk allowlist: ${diagnostics.allowlistedPackages.joinToString()}")
+                if (diagnostics == null) {
+                    Text("Loading…")
+                } else {
+                    Text("Battery: ${diagnostics.batteryPercent}%")
+                    Text("Network: ${diagnostics.networkSummary}")
+                    Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
+                    Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
+                }
                 FilledTonalButton(onClick = onOpenHomeSettings) { Text("Open Home Settings") }
-                FilledTonalButton(onClick = onEnableDeviceAdmin) { Text("Open Device Admin") }
                 FilledTonalButton(onClick = onOpenAccessibilitySettings) { Text("Open Accessibility Settings") }
             }
         }
@@ -900,10 +1014,7 @@ private fun AdminScreen(
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Recovery notes", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("Keep ADB enabled during setup so you can reprovision the device if kiosk mode misbehaves.")
-                Text("If the PIN is lost during prototyping, reinstalling the app or clearing app data will reset the local settings.")
-                Text("Full device-owner provisioning still needs ADB on a clean device.")
-                Text("Device owner command: adb shell dpm set-device-owner com.daveharris.mumlauncher/.MumDeviceAdminReceiver")
+                Text("If the PIN is lost, clear app data in Android Settings to reset everything.")
             }
         }
 

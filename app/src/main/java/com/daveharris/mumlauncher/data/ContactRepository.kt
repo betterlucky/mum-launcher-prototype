@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -17,6 +19,7 @@ private val Context.contactsDataStore by preferencesDataStore(name = "contacts")
 
 class ContactRepository(private val context: Context) {
     private val contactsKey = stringPreferencesKey("contacts_json")
+    private val mutex = Mutex()
 
     fun observeContacts(): Flow<List<Contact>> = context.contactsDataStore.data
         .catch {
@@ -41,7 +44,7 @@ class ContactRepository(private val context: Context) {
         }
     }
 
-    suspend fun add(displayName: String, phoneNumber: String) {
+    suspend fun add(displayName: String, phoneNumber: String) = mutex.withLock {
         val contacts = observeContacts().first()
         val nextId = (contacts.maxOfOrNull { it.id } ?: 0L) + 1L
         saveContacts(
@@ -54,7 +57,7 @@ class ContactRepository(private val context: Context) {
         )
     }
 
-    suspend fun update(contact: Contact) {
+    suspend fun update(contact: Contact) = mutex.withLock {
         val contacts = observeContacts().first()
         saveContacts(
             contacts.map {
@@ -70,7 +73,7 @@ class ContactRepository(private val context: Context) {
         )
     }
 
-    suspend fun delete(contact: Contact) {
+    suspend fun delete(contact: Contact) = mutex.withLock {
         val contacts = observeContacts().first()
         saveContacts(contacts.filterNot { it.id == contact.id })
     }
