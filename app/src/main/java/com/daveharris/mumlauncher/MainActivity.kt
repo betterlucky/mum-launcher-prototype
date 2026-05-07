@@ -366,8 +366,16 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setScheduleAudioAlert(enabled) }
     }
 
-    fun setAllowUserSkipExtend(enabled: Boolean) {
-        viewModelScope.launch { settingsStore.setAllowUserSkipExtend(enabled) }
+    fun setAllowUserSkipSession(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setAllowUserSkipSession(enabled) }
+    }
+
+    fun setAllowUserDelaySession(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setAllowUserDelaySession(enabled) }
+    }
+
+    fun setAllowUserExtendSession(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setAllowUserExtendSession(enabled) }
     }
 
     fun acknowledgePrompt(context: Context, action: PromptAction, anchor: String) {
@@ -387,6 +395,13 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             val untilMs = window?.endMs ?: (System.currentTimeMillis() + 24 * 60 * 60 * 1000L)
             settingsStore.setScheduleSkippedUntil(untilMs)
             settingsStore.setFocusSession(false, null)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun delaySessionStart(context: Context) {
+        viewModelScope.launch {
+            settingsStore.setScheduleSkippedUntil(System.currentTimeMillis() + 15 * 60 * 1000L)
             SchedulePromptController.sync(context, settingsStore.settings.first())
         }
     }
@@ -602,8 +617,10 @@ private fun LauncherApp(
                     showRelaxedButton = uiState.settings.showRelaxedButton,
                     onOpenRelaxed = { enterRelaxed() },
                     duePrompt = duePrompt,
-                    allowSkipExtend = uiState.settings.allowUserSkipExtend,
+                    allowSkip = uiState.settings.allowUserSkipSession,
+                    allowDelay = uiState.settings.allowUserDelaySession,
                     onSkipSession = { viewModel.skipCurrentWindow(context) },
+                    onDelaySession = { viewModel.delaySessionStart(context) },
                 )
 
                 Screen.CALLS -> ContactListScreen(
@@ -637,8 +654,11 @@ private fun LauncherApp(
                         contacts = uiState.contacts,
                         diagnostics = diagnostics,
                         onBack = { screen = Screen.HOME },
+                        onSwitchToSimple = { screen = Screen.HOME },
+                        onSwitchToRelaxed = { enterRelaxed() },
                         onToggleEditing = viewModel::setAllowUserEditing,
                         onToggleRelaxedButton = viewModel::setShowRelaxedButton,
+                        onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
                         onAdd = { isCreatingContact = true },
                         onEdit = { showEditingDialog = it },
                         onDelete = viewModel::deleteContact,
@@ -654,7 +674,9 @@ private fun LauncherApp(
                         onSetScheduleEnd = { viewModel.setScheduleEndMinutes(context, it) },
                         onSetScheduledMode = { viewModel.setScheduledMode(it) },
                         onSetAudioAlert = { viewModel.setScheduleAudioAlert(it) },
-                        onSetAllowSkipExtend = { viewModel.setAllowUserSkipExtend(it) },
+                        onSetAllowSkip = { viewModel.setAllowUserSkipSession(it) },
+                        onSetAllowDelay = { viewModel.setAllowUserDelaySession(it) },
+                        onSetAllowExtend = { viewModel.setAllowUserExtendSession(it) },
                         onOpenNotificationSettings = { SchedulePromptController.openNotificationSettings(context) },
                         onOpenAlarmSettings = { SchedulePromptController.openExactAlarmSettings(context) },
                     )
@@ -670,11 +692,8 @@ private fun LauncherApp(
                             showSwitchButton = uiState.presets.size > 1,
                             onBack = { screen = Screen.HOME },
                             onSwitchPreset = { showPresetPicker = true },
-                            onToggleScroll = {
-                                viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal)
-                            },
                             duePrompt = duePrompt,
-                            allowSkipExtend = uiState.settings.allowUserSkipExtend,
+                            allowExtend = uiState.settings.allowUserExtendSession,
                             onExtendSession = { viewModel.extendCurrentSession(context) },
                         )
                     } else {
@@ -1033,33 +1052,11 @@ private fun HomeScreen(
     showRelaxedButton: Boolean,
     onOpenRelaxed: () -> Unit,
     duePrompt: DuePrompt? = null,
-    allowSkipExtend: Boolean = false,
+    allowSkip: Boolean = false,
+    allowDelay: Boolean = false,
     onSkipSession: () -> Unit = {},
+    onDelaySession: () -> Unit = {},
 ) {
-    var showSkipDialog by remember { mutableStateOf(false) }
-
-    if (showSkipDialog && duePrompt != null) {
-        AlertDialog(
-            onDismissRequest = { showSkipDialog = false },
-            title = { Text("Session") },
-            text = {
-                Text(
-                    when (duePrompt.action) {
-                        PromptAction.ENTER_FOCUS -> "Skip the scheduled session and stay as you are?"
-                        PromptAction.EXIT_FOCUS -> "The session has ended — tap Skip to stay in this mode a bit longer."
-                    },
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { onSkipSession(); showSkipDialog = false }) {
-                    Text("Skip")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSkipDialog = false }) { Text("Cancel") }
-            },
-        )
-    }
 
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableStateOf(0L) }
@@ -1125,21 +1122,20 @@ private fun HomeScreen(
                     Text("Relaxed Mode", fontSize = 20.sp, fontWeight = FontWeight.Medium)
                 }
             }
-            if (allowSkipExtend && duePrompt != null) {
-                OutlinedButton(
-                    onClick = { showSkipDialog = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 56.dp),
-                    shape = RoundedCornerShape(20.dp),
-                ) {
-                    Text(
-                        when (duePrompt.action) {
-                            PromptAction.ENTER_FOCUS -> "Skip session"
-                            PromptAction.EXIT_FOCUS -> "Not yet"
-                        },
-                        fontSize = 18.sp,
-                    )
+            if (duePrompt?.action == PromptAction.ENTER_FOCUS) {
+                if (allowSkip) {
+                    OutlinedButton(
+                        onClick = onSkipSession,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                        shape = RoundedCornerShape(20.dp),
+                    ) { Text("Skip session", fontSize = 18.sp) }
+                }
+                if (allowDelay) {
+                    OutlinedButton(
+                        onClick = onDelaySession,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                        shape = RoundedCornerShape(20.dp),
+                    ) { Text("Not yet — 15 more minutes", fontSize = 18.sp) }
                 }
             }
         }
@@ -1342,8 +1338,11 @@ private fun AdminScreen(
     contacts: List<Contact>,
     diagnostics: Diagnostics?,
     onBack: () -> Unit,
+    onSwitchToSimple: () -> Unit,
+    onSwitchToRelaxed: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleRelaxedButton: (Boolean) -> Unit,
+    onToggleRelaxedScroll: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
@@ -1357,7 +1356,9 @@ private fun AdminScreen(
     onSetScheduleEnd: (Int) -> Unit,
     onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
     onSetAudioAlert: (Boolean) -> Unit,
-    onSetAllowSkipExtend: (Boolean) -> Unit,
+    onSetAllowSkip: (Boolean) -> Unit,
+    onSetAllowDelay: (Boolean) -> Unit,
+    onSetAllowExtend: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onOpenAlarmSettings: () -> Unit,
 ) {
@@ -1388,29 +1389,56 @@ private fun AdminScreen(
             Spacer(modifier = Modifier.width(72.dp))
         }
 
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Switch mode", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = onSwitchToSimple,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Simple") }
+                    FilledTonalButton(
+                        onClick = onSwitchToRelaxed,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Relaxed") }
+                    if (onUsePhoneNormally != null) {
+                        FilledTonalButton(
+                            onClick = onUsePhoneNormally,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Full access") }
+                    }
+                }
+                if (onUsePhoneNormally != null) {
+                    Text(
+                        "Pressing Home always returns to Mum Launcher.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+            }
+        }
+
         ToggleCard(
-            title = "Allow contact editing in normal mode",
+            title = "Allow contact editing in Simple mode",
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
         ToggleCard(
-            title = "Show Relaxed mode button on home screen",
+            title = "Show Relaxed mode button on Simple mode home screen",
             checked = settings.showRelaxedButton,
             onCheckedChange = onToggleRelaxedButton,
         )
-
-        if (onUsePhoneNormally != null) {
-            val launcherLabel = settings.nativeLauncherLabel ?: "previous launcher"
-            Button(
-                onClick = onUsePhoneNormally,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp),
-                shape = RoundedCornerShape(20.dp),
-            ) {
-                Text("Use phone normally (open $launcherLabel)", fontSize = 18.sp)
-            }
-        }
+        ToggleCard(
+            title = "Scroll Relaxed mode grid horizontally (page by page)",
+            checked = settings.relaxedScrollHorizontal,
+            onCheckedChange = { onToggleRelaxedScroll() },
+        )
 
         Card {
             Column(
@@ -1436,7 +1464,9 @@ private fun AdminScreen(
             onSetScheduleEnd = onSetScheduleEnd,
             onSetScheduledMode = onSetScheduledMode,
             onSetAudioAlert = onSetAudioAlert,
-            onSetAllowSkipExtend = onSetAllowSkipExtend,
+            onSetAllowSkip = onSetAllowSkip,
+            onSetAllowDelay = onSetAllowDelay,
+            onSetAllowExtend = onSetAllowExtend,
             onOpenNotificationSettings = onOpenNotificationSettings,
             onOpenAlarmSettings = onOpenAlarmSettings,
         )
@@ -1489,7 +1519,9 @@ private fun ScheduleCard(
     onSetScheduleEnd: (Int) -> Unit,
     onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
     onSetAudioAlert: (Boolean) -> Unit,
-    onSetAllowSkipExtend: (Boolean) -> Unit,
+    onSetAllowSkip: (Boolean) -> Unit,
+    onSetAllowDelay: (Boolean) -> Unit,
+    onSetAllowExtend: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onOpenAlarmSettings: () -> Unit,
 ) {
@@ -1623,9 +1655,19 @@ private fun ScheduleCard(
                     onCheckedChange = onSetAudioAlert,
                 )
                 ToggleCard(
-                    title = "Allow person to skip/extend session",
-                    checked = settings.allowUserSkipExtend,
-                    onCheckedChange = onSetAllowSkipExtend,
+                    title = "Allow person to skip a scheduled session",
+                    checked = settings.allowUserSkipSession,
+                    onCheckedChange = onSetAllowSkip,
+                )
+                ToggleCard(
+                    title = "Allow person to delay a session start (15 min)",
+                    checked = settings.allowUserDelaySession,
+                    onCheckedChange = onSetAllowDelay,
+                )
+                ToggleCard(
+                    title = "Allow person to extend a session (30 min)",
+                    checked = settings.allowUserExtendSession,
+                    onCheckedChange = onSetAllowExtend,
                 )
 
                 if (!SchedulePromptController.canPostNotifications(context)) {
@@ -1633,15 +1675,48 @@ private fun ScheduleCard(
                         onClick = onOpenNotificationSettings,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Enable notifications (required)")
+                        Text("Enable notifications for session prompts")
                     }
                 }
                 if (!SchedulePromptController.canScheduleExactAlarms(context)) {
-                    FilledTonalButton(
-                        onClick = onOpenAlarmSettings,
+                    var showAlarmInfo by remember { mutableStateOf(false) }
+                    if (showAlarmInfo) {
+                        AlertDialog(
+                            onDismissRequest = { showAlarmInfo = false },
+                            title = { Text("Clock access") },
+                            text = {
+                                Text(
+                                    "This permission lets the app access the phone's precise clock. Without it, session prompts may appear a few minutes late. It doesn't affect anything outside this app.",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showAlarmInfo = false; onOpenAlarmSettings() }) {
+                                    Text("Grant access")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showAlarmInfo = false }) { Text("Not now") }
+                            },
+                        )
+                    }
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("Allow exact alarms (recommended)")
+                        FilledTonalButton(
+                            onClick = onOpenAlarmSettings,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Grant clock access (recommended)")
+                        }
+                        IconButton(onClick = { showAlarmInfo = true }) {
+                            Icon(
+                                Icons.Outlined.Settings,
+                                contentDescription = "What is this?",
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            )
+                        }
                     }
                 }
             }
@@ -1683,9 +1758,8 @@ private fun RelaxedHomeScreen(
     showSwitchButton: Boolean,
     onBack: () -> Unit,
     onSwitchPreset: () -> Unit,
-    onToggleScroll: () -> Unit,
     duePrompt: DuePrompt? = null,
-    allowSkipExtend: Boolean = false,
+    allowExtend: Boolean = false,
     onExtendSession: () -> Unit = {},
 ) {
     var showExtendDialog by remember { mutableStateOf(false) }
@@ -1742,17 +1816,7 @@ private fun RelaxedHomeScreen(
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
             )
-            IconButton(
-                onClick = onToggleScroll,
-                modifier = Modifier.size(56.dp),
-            ) {
-                Text(
-                    text = if (scrollHorizontal) "↕" else "↔",
-                    fontSize = 28.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                )
-            }
-            if (allowSkipExtend && duePrompt?.action == PromptAction.EXIT_FOCUS) {
+            if (allowExtend && duePrompt?.action == PromptAction.EXIT_FOCUS) {
                 TextButton(onClick = { showExtendDialog = true }) {
                     Text("Extend", fontSize = 16.sp)
                 }

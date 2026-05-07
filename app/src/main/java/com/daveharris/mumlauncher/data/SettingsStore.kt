@@ -34,7 +34,9 @@ data class LauncherSettings(
     val focusSessionActive: Boolean = false,
     val focusSessionAnchor: String? = null,
     val scheduleAudioAlert: Boolean = false,
-    val allowUserSkipExtend: Boolean = false,
+    val allowUserSkipSession: Boolean = false,
+    val allowUserDelaySession: Boolean = false,
+    val allowUserExtendSession: Boolean = false,
     val scheduleSkippedUntilMs: Long = 0L,
 )
 
@@ -55,7 +57,9 @@ class SettingsStore(private val context: Context) {
         val focusSessionActive = booleanPreferencesKey("focus_session_active")
         val focusSessionAnchor = stringPreferencesKey("focus_session_anchor")
         val scheduleAudioAlert = booleanPreferencesKey("schedule_audio_alert")
-        val allowUserSkipExtend = booleanPreferencesKey("allow_user_skip_extend")
+        val allowUserSkipSession = booleanPreferencesKey("allow_user_skip_session")
+        val allowUserDelaySession = booleanPreferencesKey("allow_user_delay_session")
+        val allowUserExtendSession = booleanPreferencesKey("allow_user_extend_session")
         val scheduleSkippedUntilMs = longPreferencesKey("schedule_skipped_until_ms")
     }
 
@@ -82,7 +86,9 @@ class SettingsStore(private val context: Context) {
                 focusSessionActive = prefs[Keys.focusSessionActive] ?: false,
                 focusSessionAnchor = prefs[Keys.focusSessionAnchor],
                 scheduleAudioAlert = prefs[Keys.scheduleAudioAlert] ?: false,
-                allowUserSkipExtend = prefs[Keys.allowUserSkipExtend] ?: false,
+                allowUserSkipSession = prefs[Keys.allowUserSkipSession] ?: false,
+                allowUserDelaySession = prefs[Keys.allowUserDelaySession] ?: false,
+                allowUserExtendSession = prefs[Keys.allowUserExtendSession] ?: false,
                 scheduleSkippedUntilMs = prefs[Keys.scheduleSkippedUntilMs] ?: 0L,
             )
         }
@@ -146,8 +152,16 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit { it[Keys.scheduleAudioAlert] = enabled }
     }
 
-    suspend fun setAllowUserSkipExtend(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.allowUserSkipExtend] = enabled }
+    suspend fun setAllowUserSkipSession(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.allowUserSkipSession] = enabled }
+    }
+
+    suspend fun setAllowUserDelaySession(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.allowUserDelaySession] = enabled }
+    }
+
+    suspend fun setAllowUserExtendSession(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.allowUserExtendSession] = enabled }
     }
 
     suspend fun setScheduleSkippedUntil(ms: Long) {
