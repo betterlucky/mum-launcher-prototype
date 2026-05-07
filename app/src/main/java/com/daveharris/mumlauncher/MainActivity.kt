@@ -92,6 +92,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import com.daveharris.mumlauncher.BuildConfig
 import com.daveharris.mumlauncher.data.Contact
 import com.daveharris.mumlauncher.data.ContactRepository
 import com.daveharris.mumlauncher.data.LauncherSettings
@@ -346,6 +347,10 @@ private fun LauncherApp(
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearError()
         }
+    }
+
+    if (!uiState.settings.setupComplete && BuildConfig.DEBUG) {
+        LaunchedEffect(Unit) { requestPinShortcut(context) }
     }
 
     if (!uiState.settings.setupComplete) {
