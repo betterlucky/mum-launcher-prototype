@@ -2,6 +2,9 @@ package com.daveharris.mumlauncher
 
 import android.app.admin.DevicePolicyManager
 import android.content.pm.PackageManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -353,6 +356,7 @@ private fun LauncherApp(
                 openHomeSettings(context)
             },
             onEnableDeviceAdmin = { requestDeviceAdmin(context) },
+            onPinShortcut = { requestPinShortcut(context) },
             onFinishSetup = { pin -> viewModel.completeSetup(pin) },
         )
         return
@@ -546,6 +550,20 @@ private fun openHomeSettings(context: Context) {
         }
 }
 
+private fun requestPinShortcut(context: Context) {
+    val sm = context.getSystemService(ShortcutManager::class.java)
+    if (!sm.isRequestPinShortcutSupported) {
+        Toast.makeText(context, "This launcher doesn't support pinned shortcuts.", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val shortcut = ShortcutInfo.Builder(context, "main_shortcut")
+        .setShortLabel(context.getString(R.string.app_name))
+        .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
+        .setIntent(Intent(context, MainActivity::class.java).apply { action = Intent.ACTION_MAIN })
+        .build()
+    sm.requestPinShortcut(shortcut, null)
+}
+
 private fun openNativeLauncher(context: Context, packageName: String) {
     val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -588,6 +606,7 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
 private fun SetupScreen(
     onOpenHomeSettings: () -> Unit,
     onEnableDeviceAdmin: () -> Unit,
+    onPinShortcut: () -> Unit,
     onFinishSetup: (String) -> Unit,
 ) {
     var pin by rememberSaveable { mutableStateOf("") }
@@ -620,13 +639,19 @@ private fun SetupScreen(
             onAction = onOpenHomeSettings,
         )
         SetupStepCard(
-            title = "2. Enable device admin",
+            title = "2. Pin to home screen",
+            body = "Adds a shortcut to the home screen so carers and family can get back here easily.",
+            actionLabel = "Pin shortcut",
+            onAction = onPinShortcut,
+        )
+        SetupStepCard(
+            title = "3. Enable device admin",
             body = "Best effort for kiosk support. Full device-owner lockdown still needs ADB provisioning on a clean device.",
             actionLabel = "Enable Device Admin",
             onAction = onEnableDeviceAdmin,
         )
         SetupStepCard(
-            title = "3. Note prototype permissions",
+            title = "4. Note prototype permissions",
             body = "This build uses Android intents for calls and SMS, so it avoids extra runtime call or SMS permissions for now.",
             actionLabel = null,
             onAction = null,
