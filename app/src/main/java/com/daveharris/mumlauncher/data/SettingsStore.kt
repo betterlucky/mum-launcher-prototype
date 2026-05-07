@@ -20,6 +20,8 @@ data class LauncherSettings(
     val setupComplete: Boolean = false,
     val nativeLauncherPackage: String? = null,
     val nativeLauncherLabel: String? = null,
+    val showRelaxedButton: Boolean = true,
+    val relaxedScrollHorizontal: Boolean = false,
 )
 
 class SettingsStore(private val context: Context) {
@@ -29,6 +31,8 @@ class SettingsStore(private val context: Context) {
         val setupComplete = booleanPreferencesKey("setup_complete")
         val nativeLauncherPackage = stringPreferencesKey("native_launcher_package")
         val nativeLauncherLabel = stringPreferencesKey("native_launcher_label")
+        val showRelaxedButton = booleanPreferencesKey("show_relaxed_button")
+        val relaxedScrollHorizontal = booleanPreferencesKey("relaxed_scroll_horizontal")
     }
 
     val settings: Flow<LauncherSettings> = context.settingsDataStore.data
@@ -42,6 +46,8 @@ class SettingsStore(private val context: Context) {
                 setupComplete = prefs[Keys.setupComplete] ?: false,
                 nativeLauncherPackage = prefs[Keys.nativeLauncherPackage],
                 nativeLauncherLabel = prefs[Keys.nativeLauncherLabel],
+                showRelaxedButton = prefs[Keys.showRelaxedButton] ?: true,
+                relaxedScrollHorizontal = prefs[Keys.relaxedScrollHorizontal] ?: false,
             )
         }
 
@@ -62,5 +68,13 @@ class SettingsStore(private val context: Context) {
             it[Keys.nativeLauncherPackage] = packageName
             it[Keys.nativeLauncherLabel] = label
         }
+    }
+
+    suspend fun setShowRelaxedButton(show: Boolean) {
+        context.settingsDataStore.edit { it[Keys.showRelaxedButton] = show }
+    }
+
+    suspend fun setRelaxedScrollHorizontal(horizontal: Boolean) {
+        context.settingsDataStore.edit { it[Keys.relaxedScrollHorizontal] = horizontal }
     }
 }
