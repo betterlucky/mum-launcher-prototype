@@ -1,12 +1,10 @@
 package com.daveharris.mumlauncher
 
-import android.app.admin.DevicePolicyManager
 import android.content.pm.PackageManager
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
 import android.content.ActivityNotFoundException
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -200,10 +198,6 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setAllowUserContactEditing(allowed) }
     }
 
-    fun setKioskEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsStore.setKioskEnabled(enabled) }
-    }
-
     fun addContact(name: String, phoneNumber: String) {
         if (name.isBlank() || phoneNumber.isBlank()) {
             transientError.value = "Both name and phone number are required."
@@ -333,18 +327,7 @@ private fun LauncherApp(
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
 
-    LaunchedEffect(uiState.settings.kioskEnabled, uiState.settings.setupComplete) {
-        activity.hideSystemUi()
-        val kioskState = KioskController.syncKioskPolicy(
-            context,
-            uiState.settings.kioskEnabled && uiState.settings.setupComplete,
-        )
-        if (uiState.settings.kioskEnabled && uiState.settings.setupComplete && kioskState.isLockTaskPermitted) {
-            runCatching { activity.startLockTask() }
-        } else {
-            runCatching { activity.stopLockTask() }
-        }
-    }
+    LaunchedEffect(Unit) { activity.hideSystemUi() }
 
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
@@ -364,7 +347,6 @@ private fun LauncherApp(
                 viewModel.saveNativeLauncherIfNeeded(context)
                 openHomeSettings(context)
             },
-            onEnableDeviceAdmin = { requestDeviceAdmin(context) },
             onPinShortcut = { requestPinShortcut(context) },
             onFinishSetup = { pin -> viewModel.completeSetup(pin) },
         )
@@ -428,7 +410,6 @@ private fun LauncherApp(
                     diagnostics = diagnostics,
                     onBack = { screen = Screen.HOME },
                     onToggleEditing = viewModel::setAllowUserEditing,
-                    onToggleKiosk = viewModel::setKioskEnabled,
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
@@ -437,7 +418,6 @@ private fun LauncherApp(
                     },
                     onOpenHomeSettings = { openHomeSettings(context) },
                     onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
-                    onEnableDeviceAdmin = { requestDeviceAdmin(context) },
                 )
                 }
             }
@@ -495,12 +475,8 @@ private fun LauncherApp(
 internal data class Diagnostics(
     val batteryPercent: Int,
     val networkSummary: String,
-    val isDeviceAdminEnabled: Boolean,
-    val isLockTaskPermitted: Boolean,
-    val isDeviceOwner: Boolean,
     val dialerPackage: String?,
     val smsPackage: String?,
-    val allowlistedPackages: List<String>,
 )
 
 private fun buildDiagnosticsFromApp(context: Context): Diagnostics {
@@ -516,29 +492,19 @@ private fun buildDiagnosticsFromApp(context: Context): Diagnostics {
         capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobile data connected"
         else -> "Connected"
     }
-    val kioskState = KioskController.getState(context)
+    val pm = context.packageManager
+    val dialerPackage = Intent(Intent.ACTION_DIAL)
+        .let { pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY) }
+        ?.activityInfo?.packageName
+    val smsPackage = Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:"))
+        .let { pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY) }
+        ?.activityInfo?.packageName
     return Diagnostics(
         batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),
         networkSummary = networkSummary,
-        isDeviceAdminEnabled = kioskState.isDeviceAdminEnabled,
-        isLockTaskPermitted = kioskState.isLockTaskPermitted,
-        isDeviceOwner = kioskState.isDeviceOwner,
-        dialerPackage = kioskState.dialerPackage,
-        smsPackage = kioskState.smsPackage,
-        allowlistedPackages = kioskState.allowlistedPackages,
+        dialerPackage = dialerPackage,
+        smsPackage = smsPackage,
     )
-}
-
-private fun requestDeviceAdmin(context: Context) {
-    val adminComponent = ComponentName(context, MumDeviceAdminReceiver::class.java)
-    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-        putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-        putExtra(
-            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-            "Enable device admin to prepare kiosk mode and support access.",
-        )
-    }
-    context.startActivity(intent)
 }
 
 private fun detectNativeLauncher(context: Context): Pair<String, String>? {
@@ -614,7 +580,6 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
 @Composable
 private fun SetupScreen(
     onOpenHomeSettings: () -> Unit,
-    onEnableDeviceAdmin: () -> Unit,
     onPinShortcut: () -> Unit,
     onFinishSetup: (String) -> Unit,
 ) {
@@ -654,13 +619,7 @@ private fun SetupScreen(
             onAction = onPinShortcut,
         )
         SetupStepCard(
-            title = "3. Enable device admin",
-            body = "Best effort for kiosk support. Full device-owner lockdown still needs ADB provisioning on a clean device.",
-            actionLabel = "Enable Device Admin",
-            onAction = onEnableDeviceAdmin,
-        )
-        SetupStepCard(
-            title = "4. Note prototype permissions",
+            title = "3. Note prototype permissions",
             body = "This build uses Android intents for calls and SMS, so it avoids extra runtime call or SMS permissions for now.",
             actionLabel = null,
             onAction = null,
@@ -991,14 +950,12 @@ private fun AdminScreen(
     diagnostics: Diagnostics?,
     onBack: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
-    onToggleKiosk: (Boolean) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
     onUsePhoneNormally: (() -> Unit)?,
     onOpenHomeSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onEnableDeviceAdmin: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1025,12 +982,6 @@ private fun AdminScreen(
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
-        ToggleCard(
-            title = "Kiosk mode enabled",
-            checked = settings.kioskEnabled,
-            onCheckedChange = onToggleKiosk,
-        )
-
         if (onUsePhoneNormally != null) {
             val launcherLabel = settings.nativeLauncherLabel ?: "previous launcher"
             Button(
@@ -1052,15 +1003,10 @@ private fun AdminScreen(
                 } else {
                     Text("Battery: ${diagnostics.batteryPercent}%")
                     Text("Network: ${diagnostics.networkSummary}")
-                    Text("Device admin: ${if (diagnostics.isDeviceAdminEnabled) "Enabled" else "Not enabled"}")
-                    Text("Device owner: ${if (diagnostics.isDeviceOwner) "Enabled" else "Not enabled"}")
-                    Text("Lock task allowed: ${if (diagnostics.isLockTaskPermitted) "Yes" else "No"}")
                     Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
                     Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
-                    Text("Kiosk allowlist: ${diagnostics.allowlistedPackages.joinToString()}")
                 }
                 FilledTonalButton(onClick = onOpenHomeSettings) { Text("Open Home Settings") }
-                FilledTonalButton(onClick = onEnableDeviceAdmin) { Text("Open Device Admin") }
                 FilledTonalButton(onClick = onOpenAccessibilitySettings) { Text("Open Accessibility Settings") }
             }
         }
@@ -1068,10 +1014,7 @@ private fun AdminScreen(
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Recovery notes", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("Keep ADB enabled during setup so you can reprovision the device if kiosk mode misbehaves.")
-                Text("If the PIN is lost during prototyping, reinstalling the app or clearing app data will reset the local settings.")
-                Text("Full device-owner provisioning still needs ADB on a clean device.")
-                Text("Device owner command: adb shell dpm set-device-owner com.daveharris.mumlauncher/.MumDeviceAdminReceiver")
+                Text("If the PIN is lost, clear app data in Android Settings to reset everything.")
             }
         }
 

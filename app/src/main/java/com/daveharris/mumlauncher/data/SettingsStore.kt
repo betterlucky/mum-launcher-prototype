@@ -17,7 +17,6 @@ private val Context.settingsDataStore by preferencesDataStore(name = "settings")
 data class LauncherSettings(
     val pinHash: String? = null,
     val allowUserContactEditing: Boolean = true,
-    val kioskEnabled: Boolean = false,
     val setupComplete: Boolean = false,
     val nativeLauncherPackage: String? = null,
     val nativeLauncherLabel: String? = null,
@@ -27,7 +26,6 @@ class SettingsStore(private val context: Context) {
     private object Keys {
         val pinHash = stringPreferencesKey("pin_hash")
         val allowUserContactEditing = booleanPreferencesKey("allow_user_contact_editing")
-        val kioskEnabled = booleanPreferencesKey("kiosk_enabled")
         val setupComplete = booleanPreferencesKey("setup_complete")
         val nativeLauncherPackage = stringPreferencesKey("native_launcher_package")
         val nativeLauncherLabel = stringPreferencesKey("native_launcher_label")
@@ -41,7 +39,6 @@ class SettingsStore(private val context: Context) {
             LauncherSettings(
                 pinHash = prefs[Keys.pinHash],
                 allowUserContactEditing = prefs[Keys.allowUserContactEditing] ?: true,
-                kioskEnabled = prefs[Keys.kioskEnabled] ?: false,
                 setupComplete = prefs[Keys.setupComplete] ?: false,
                 nativeLauncherPackage = prefs[Keys.nativeLauncherPackage],
                 nativeLauncherLabel = prefs[Keys.nativeLauncherLabel],
@@ -54,10 +51,6 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setAllowUserContactEditing(allowed: Boolean) {
         context.settingsDataStore.edit { it[Keys.allowUserContactEditing] = allowed }
-    }
-
-    suspend fun setKioskEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.kioskEnabled] = enabled }
     }
 
     suspend fun setSetupComplete(complete: Boolean) {
