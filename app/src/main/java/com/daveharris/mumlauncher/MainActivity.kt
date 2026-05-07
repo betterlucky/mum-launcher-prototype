@@ -1,12 +1,16 @@
 package com.daveharris.mumlauncher
 
-import android.content.pm.PackageManager
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
-import android.graphics.drawable.Icon
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -21,13 +25,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,16 +49,30 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Mail
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -58,6 +82,8 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -69,18 +95,22 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
@@ -90,18 +120,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.daveharris.mumlauncher.BuildConfig
 import com.daveharris.mumlauncher.data.Contact
 import com.daveharris.mumlauncher.data.ContactRepository
 import com.daveharris.mumlauncher.data.LauncherSettings
+import com.daveharris.mumlauncher.data.Preset
+import com.daveharris.mumlauncher.data.PresetRepository
 import com.daveharris.mumlauncher.data.SettingsStore
 import com.daveharris.mumlauncher.ui.theme.MumLauncherTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.SecretKeyFactory
@@ -112,25 +146,45 @@ private enum class Screen {
     CALLS,
     MESSAGES,
     ADMIN,
+    RELAXED,
+    PRESET_MANAGER,
+    PRESET_EDITOR,
 }
+
+data class InstalledApp(
+    val packageName: String,
+    val label: String,
+)
 
 data class AppUiState(
     val contacts: List<Contact> = emptyList(),
     val settings: LauncherSettings = LauncherSettings(),
+    val presets: List<Preset> = emptyList(),
+    val installedApps: List<InstalledApp> = emptyList(),
     val lastError: String? = null,
 )
 
 class MainViewModel(application: android.app.Application) : AndroidViewModel(application) {
     private val contactRepository = ContactRepository(application)
     private val settingsStore = SettingsStore(application)
+    private val presetRepository = PresetRepository(application)
     private val transientError = MutableStateFlow<String?>(null)
+    private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
 
     val uiState: StateFlow<AppUiState> = combine(
         contactRepository.observeContacts(),
         settingsStore.settings,
+        presetRepository.observePresets(),
+        _installedApps,
         transientError,
-    ) { contacts, settings, error ->
-        AppUiState(contacts = contacts, settings = settings, lastError = error)
+    ) { contacts, settings, presets, installedApps, error ->
+        AppUiState(
+            contacts = contacts,
+            settings = settings,
+            presets = presets,
+            installedApps = installedApps,
+            lastError = error,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -141,6 +195,21 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch {
             contactRepository.ensureSeedData()
         }
+        loadInstalledApps()
+    }
+
+    private fun loadInstalledApps() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val pm = getApplication<android.app.Application>().packageManager
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            @Suppress("DEPRECATION")
+            val apps = pm.queryIntentActivities(intent, 0)
+                .filter { it.activityInfo.packageName != "com.daveharris.mumlauncher" }
+                .map { InstalledApp(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
+                .sortedBy { it.label.lowercase() }
+                .distinctBy { it.packageName }
+            _installedApps.value = apps
+        }
     }
 
     fun clearError() {
@@ -148,12 +217,12 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     }
 
     fun completeSetup(pin: String) {
-        if (pin.length < 4) {
-            transientError.value = "Choose a PIN with at least 4 digits."
+        if (pin.isNotEmpty() && pin.length < 4) {
+            transientError.value = "PIN must be at least 4 digits, or leave blank for no PIN."
             return
         }
         viewModelScope.launch {
-            settingsStore.setPinHash(hashPin(pin))
+            if (pin.isNotEmpty()) settingsStore.setPinHash(hashPin(pin))
             settingsStore.setSetupComplete(true)
         }
     }
@@ -198,6 +267,14 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setAllowUserContactEditing(allowed) }
     }
 
+    fun setShowRelaxedButton(show: Boolean) {
+        viewModelScope.launch { settingsStore.setShowRelaxedButton(show) }
+    }
+
+    fun setRelaxedScrollHorizontal(horizontal: Boolean) {
+        viewModelScope.launch { settingsStore.setRelaxedScrollHorizontal(horizontal) }
+    }
+
     fun addContact(name: String, phoneNumber: String) {
         if (name.isBlank() || phoneNumber.isBlank()) {
             transientError.value = "Both name and phone number are required."
@@ -231,6 +308,21 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun refreshDiagnostics() {
         _diagnostics.value = buildDiagnosticsFromApp(getApplication())
+    }
+
+    fun createPreset(name: String, apps: List<String>, onCreated: (Long) -> Unit) {
+        viewModelScope.launch {
+            val id = presetRepository.add(name, apps)
+            onCreated(id)
+        }
+    }
+
+    fun updatePreset(preset: Preset) {
+        viewModelScope.launch { presetRepository.update(preset) }
+    }
+
+    fun deletePreset(id: Long) {
+        viewModelScope.launch { presetRepository.delete(id) }
     }
 
     private fun hashPin(pin: String): String {
@@ -326,6 +418,11 @@ private fun LauncherApp(
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
+    var activePresetId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var editingPresetId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var showFirstRunPreset by remember { mutableStateOf(false) }
+    var showPresetPicker by remember { mutableStateOf(false) }
+    var showNewPresetDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { activity.hideSystemUi() }
 
@@ -336,7 +433,7 @@ private fun LauncherApp(
         }
     }
 
-    if (!uiState.settings.setupComplete && BuildConfig.DEBUG) {
+    if (!uiState.settings.setupComplete) {
         LaunchedEffect(Unit) { requestPinShortcut(context) }
     }
 
@@ -356,7 +453,20 @@ private fun LauncherApp(
     BackHandler {
         screen = when (screen) {
             Screen.HOME -> Screen.HOME
-            Screen.CALLS, Screen.MESSAGES, Screen.ADMIN -> Screen.HOME
+            Screen.CALLS, Screen.MESSAGES, Screen.ADMIN, Screen.RELAXED -> Screen.HOME
+            Screen.PRESET_MANAGER -> Screen.ADMIN
+            Screen.PRESET_EDITOR -> Screen.PRESET_MANAGER
+        }
+    }
+
+    fun enterRelaxed() {
+        when {
+            uiState.presets.isEmpty() -> showFirstRunPreset = true
+            uiState.presets.size == 1 -> {
+                activePresetId = uiState.presets.first().id
+                screen = Screen.RELAXED
+            }
+            else -> showPresetPicker = true
         }
     }
 
@@ -375,7 +485,12 @@ private fun LauncherApp(
                 Screen.HOME -> HomeScreen(
                     onOpenCalls = { screen = Screen.CALLS },
                     onOpenMessages = { screen = Screen.MESSAGES },
-                    onOpenAdmin = { showPinPrompt = true },
+                    onOpenAdmin = {
+                        if (uiState.settings.pinHash == null) screen = Screen.ADMIN
+                        else showPinPrompt = true
+                    },
+                    showRelaxedButton = uiState.settings.showRelaxedButton,
+                    onOpenRelaxed = { enterRelaxed() },
                 )
 
                 Screen.CALLS -> ContactListScreen(
@@ -405,20 +520,66 @@ private fun LauncherApp(
                 Screen.ADMIN -> {
                     LaunchedEffect(Unit) { viewModel.refreshDiagnostics() }
                     AdminScreen(
-                    settings = uiState.settings,
-                    contacts = uiState.contacts,
-                    diagnostics = diagnostics,
-                    onBack = { screen = Screen.HOME },
-                    onToggleEditing = viewModel::setAllowUserEditing,
-                    onAdd = { isCreatingContact = true },
-                    onEdit = { showEditingDialog = it },
-                    onDelete = viewModel::deleteContact,
-                    onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
-                        { openNativeLauncher(context, pkg) }
+                        settings = uiState.settings,
+                        contacts = uiState.contacts,
+                        diagnostics = diagnostics,
+                        onBack = { screen = Screen.HOME },
+                        onToggleEditing = viewModel::setAllowUserEditing,
+                        onToggleRelaxedButton = viewModel::setShowRelaxedButton,
+                        onAdd = { isCreatingContact = true },
+                        onEdit = { showEditingDialog = it },
+                        onDelete = viewModel::deleteContact,
+                        onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
+                            { openNativeLauncher(context, pkg) }
+                        },
+                        onOpenPresets = { screen = Screen.PRESET_MANAGER },
+                        onOpenHomeSettings = { openHomeSettings(context) },
+                        onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
+                    )
+                }
+
+                Screen.RELAXED -> {
+                    val activePreset = uiState.presets.find { it.id == activePresetId }
+                    if (activePreset != null) {
+                        RelaxedHomeScreen(
+                            preset = activePreset,
+                            installedApps = uiState.installedApps,
+                            scrollHorizontal = uiState.settings.relaxedScrollHorizontal,
+                            showSwitchButton = uiState.presets.size > 1,
+                            onBack = { screen = Screen.HOME },
+                            onSwitchPreset = { showPresetPicker = true },
+                            onToggleScroll = {
+                                viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal)
+                            },
+                        )
+                    } else {
+                        screen = Screen.HOME
+                    }
+                }
+
+                Screen.PRESET_MANAGER -> PresetManagerScreen(
+                    presets = uiState.presets,
+                    onBack = { screen = Screen.ADMIN },
+                    onEdit = { preset ->
+                        editingPresetId = preset.id
+                        screen = Screen.PRESET_EDITOR
                     },
-                    onOpenHomeSettings = { openHomeSettings(context) },
-                    onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
+                    onDelete = { viewModel.deletePreset(it.id) },
+                    onNewPreset = { showNewPresetDialog = true },
                 )
+
+                Screen.PRESET_EDITOR -> {
+                    val editingPreset = uiState.presets.find { it.id == editingPresetId }
+                    if (editingPreset != null) {
+                        PresetEditorScreen(
+                            preset = editingPreset,
+                            installedApps = uiState.installedApps,
+                            onBack = { screen = Screen.PRESET_MANAGER },
+                            onUpdatePreset = viewModel::updatePreset,
+                        )
+                    } else {
+                        screen = Screen.PRESET_MANAGER
+                    }
                 }
             }
         }
@@ -468,6 +629,54 @@ private fun LauncherApp(
                 viewModel.deleteContact(contact)
                 showEditingDialog = null
             },
+        )
+    }
+
+    if (showFirstRunPreset) {
+        FirstRunPresetDialog(
+            onAddAll = {
+                showFirstRunPreset = false
+                val allApps = uiState.installedApps.map { it.packageName }
+                viewModel.createPreset("My Apps", allApps) { newId ->
+                    activePresetId = newId
+                    screen = Screen.RELAXED
+                }
+            },
+            onStartBlank = {
+                showFirstRunPreset = false
+                viewModel.createPreset("My Apps", emptyList()) { newId ->
+                    activePresetId = newId
+                    screen = Screen.RELAXED
+                }
+            },
+            onDismiss = { showFirstRunPreset = false },
+        )
+    }
+
+    if (showPresetPicker) {
+        PresetPickerDialog(
+            presets = uiState.presets,
+            selectedId = activePresetId,
+            onSelect = { preset ->
+                activePresetId = preset.id
+                showPresetPicker = false
+                screen = Screen.RELAXED
+            },
+            onDismiss = { showPresetPicker = false },
+        )
+    }
+
+    if (showNewPresetDialog) {
+        NewPresetNameDialog(
+            onConfirm = { name, startWithAll ->
+                showNewPresetDialog = false
+                val apps = if (startWithAll) uiState.installedApps.map { it.packageName } else emptyList()
+                viewModel.createPreset(name, apps) { newId ->
+                    editingPresetId = newId
+                    screen = Screen.PRESET_EDITOR
+                }
+            },
+            onDismiss = { showNewPresetDialog = false },
         )
     }
 }
@@ -577,6 +786,21 @@ private fun launchExternalIntent(context: Context, intent: Intent, errorMessage:
     }
 }
 
+private fun Drawable.toBitmap(): Bitmap {
+    if (this is BitmapDrawable) return bitmap
+    val bmp = Bitmap.createBitmap(
+        intrinsicWidth.coerceAtLeast(1),
+        intrinsicHeight.coerceAtLeast(1),
+        Bitmap.Config.ARGB_8888,
+    )
+    val canvas = Canvas(bmp)
+    setBounds(0, 0, canvas.width, canvas.height)
+    draw(canvas)
+    return bmp
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+
 @Composable
 private fun SetupScreen(
     onOpenHomeSettings: () -> Unit,
@@ -630,7 +854,7 @@ private fun SetupScreen(
                 value = pin,
                 onValueChange = { pin = it.filter(Char::isDigit).take(8) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Admin PIN") },
+                label = { Text("Admin PIN (optional)") },
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
             )
@@ -673,17 +897,19 @@ private fun SetupStepCard(
     }
 }
 
+// ── Home ──────────────────────────────────────────────────────────────────────
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeScreen(
     onOpenCalls: () -> Unit,
     onOpenMessages: () -> Unit,
     onOpenAdmin: () -> Unit,
+    showRelaxedButton: Boolean,
+    onOpenRelaxed: () -> Unit,
 ) {
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableStateOf(0L) }
-    var cogTapCount by remember { mutableIntStateOf(0) }
-    var lastCogTapMs by remember { mutableStateOf(0L) }
 
     Column(
         modifier = Modifier
@@ -692,59 +918,34 @@ private fun HomeScreen(
     ) {
         Spacer(modifier = Modifier.height(18.dp))
 
-        Box(
+        Text(
+            text = "Mum's Phone",
             modifier = Modifier
                 .fillMaxWidth()
-        ) {
-            Text(
-                text = "Mum's Phone",
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .combinedClickable(
-                        onClick = {
-                            val now = System.currentTimeMillis()
-                            tapCount = if (now - lastTapMs < 900) tapCount + 1 else 1
-                            lastTapMs = now
-                            if (tapCount >= 3) {
-                                tapCount = 0
-                                onOpenAdmin()
-                            }
-                        },
-                        onLongClick = onOpenAdmin,
-                    ),
-                textAlign = TextAlign.Center,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
-            IconButton(
-                onClick = {
-                    val now = System.currentTimeMillis()
-                    cogTapCount = if (now - lastCogTapMs < 900) cogTapCount + 1 else 1
-                    lastCogTapMs = now
-                    if (cogTapCount >= 3) {
-                        cogTapCount = 0
-                        onOpenAdmin()
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .size(36.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Settings,
-                    contentDescription = "Admin",
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.32f),
+                .combinedClickable(
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        tapCount = if (now - lastTapMs < 900) tapCount + 1 else 1
+                        lastTapMs = now
+                        if (tapCount >= 3) {
+                            tapCount = 0
+                            onOpenAdmin()
+                        }
+                    },
+                    onLongClick = onOpenAdmin,
                 )
-            }
-        }
+                .padding(vertical = 16.dp),
+            textAlign = TextAlign.Center,
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
 
         Spacer(modifier = Modifier.weight(0.85f))
 
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(40.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             HomeActionButton(
                 label = "Calls",
@@ -758,6 +959,19 @@ private fun HomeScreen(
                 color = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenMessages,
             )
+            if (showRelaxedButton) {
+                FilledTonalButton(
+                    onClick = onOpenRelaxed,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 72.dp),
+                    shape = RoundedCornerShape(28.dp),
+                ) {
+                    Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(22.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Relaxed Mode", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                }
+            }
         }
 
         Spacer(modifier = Modifier.weight(1.15f))
@@ -812,6 +1026,8 @@ private fun HomeActionButton(
     }
 }
 
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
 @Composable
 private fun ContactListScreen(
     title: String,
@@ -831,10 +1047,15 @@ private fun ContactListScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("Back") }
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
             Text(
                 text = title,
                 modifier = Modifier.weight(1f),
@@ -943,6 +1164,8 @@ private fun ContactCard(
     }
 }
 
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
 @Composable
 private fun AdminScreen(
     settings: LauncherSettings,
@@ -950,10 +1173,12 @@ private fun AdminScreen(
     diagnostics: Diagnostics?,
     onBack: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
+    onToggleRelaxedButton: (Boolean) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
     onUsePhoneNormally: (() -> Unit)?,
+    onOpenPresets: () -> Unit,
     onOpenHomeSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
 ) {
@@ -965,8 +1190,14 @@ private fun AdminScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back") }
+        Row(
+            modifier = Modifier.height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
             Text(
                 text = "Admin",
                 modifier = Modifier.weight(1f),
@@ -974,7 +1205,7 @@ private fun AdminScreen(
                 fontSize = 30.sp,
                 fontWeight = FontWeight.Bold,
             )
-            Icon(Icons.Outlined.Settings, contentDescription = null)
+            Spacer(modifier = Modifier.width(72.dp))
         }
 
         ToggleCard(
@@ -982,6 +1213,12 @@ private fun AdminScreen(
             checked = settings.allowUserContactEditing,
             onCheckedChange = onToggleEditing,
         )
+        ToggleCard(
+            title = "Show Relaxed mode button on home screen",
+            checked = settings.showRelaxedButton,
+            onCheckedChange = onToggleRelaxedButton,
+        )
+
         if (onUsePhoneNormally != null) {
             val launcherLabel = settings.nativeLauncherLabel ?: "previous launcher"
             Button(
@@ -992,6 +1229,22 @@ private fun AdminScreen(
                 shape = RoundedCornerShape(20.dp),
             ) {
                 Text("Use phone normally (open $launcherLabel)", fontSize = 18.sp)
+            }
+        }
+
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Relaxed mode", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Create and edit app collections (presets) for Relaxed mode.",
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+                FilledTonalButton(onClick = onOpenPresets, modifier = Modifier.fillMaxWidth()) {
+                    Text("Manage presets")
+                }
             }
         }
 
@@ -1056,6 +1309,566 @@ private fun ToggleCard(
         }
     }
 }
+
+// ── Relaxed home ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun RelaxedHomeScreen(
+    preset: Preset,
+    installedApps: List<InstalledApp>,
+    scrollHorizontal: Boolean,
+    showSwitchButton: Boolean,
+    onBack: () -> Unit,
+    onSwitchPreset: () -> Unit,
+    onToggleScroll: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    // null = empty slot, non-null = app (uninstalled packages are dropped)
+    val gridItems: List<IndexedValue<InstalledApp?>> = preset.apps.mapIndexedNotNull { i, pkg ->
+        when {
+            pkg.isEmpty() -> IndexedValue(i, null)
+            else -> installedApps.find { it.packageName == pkg }?.let { IndexedValue(i, it) }
+        }
+    }
+
+    fun launchApp(packageName: String) {
+        val intent = context.packageManager
+            .getLaunchIntentForPackage(packageName)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (intent != null) context.startActivity(intent)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
+            Text(
+                text = preset.name,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            IconButton(
+                onClick = onToggleScroll,
+                modifier = Modifier.size(56.dp),
+            ) {
+                Text(
+                    text = if (scrollHorizontal) "↕" else "↔",
+                    fontSize = 28.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+            }
+            if (showSwitchButton) {
+                IconButton(onClick = onSwitchPreset) {
+                    Icon(Icons.Outlined.SwapHoriz, contentDescription = "Switch preset")
+                }
+            } else {
+                Spacer(modifier = Modifier.width(48.dp))
+            }
+        }
+
+        if (gridItems.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(32.dp),
+                ) {
+                    Text("No apps in this preset yet.", fontSize = 18.sp, textAlign = TextAlign.Center)
+                    Text(
+                        "Add apps via Admin → Manage Presets.",
+                        fontSize = 16.sp,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+            }
+        } else if (scrollHorizontal) {
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val colCount = (maxWidth / 96.dp).toInt().coerceAtLeast(2)
+                val rowCount = (maxHeight / 120.dp).toInt().coerceAtLeast(2)
+                val appsPerPage = colCount * rowCount
+                val pages = gridItems.chunked(appsPerPage)
+                val pagerState = rememberPagerState(pageCount = { pages.size })
+
+                Column(modifier = Modifier.fillMaxSize()) {
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.weight(1f),
+                    ) { pageIndex ->
+                        val pageItems = pages.getOrElse(pageIndex) { emptyList() }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            pageItems.chunked(colCount).forEach { rowItems ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    rowItems.forEach { (_, app) ->
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            if (app != null) AppGridItem(app, { launchApp(app.packageName) })
+                                            else EmptyGridSlot()
+                                        }
+                                    }
+                                    repeat(colCount - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
+                                }
+                            }
+                        }
+                    }
+
+                    if (pages.size > 1) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            pages.indices.forEach { i ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(if (i == pagerState.currentPage) 8.dp else 6.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (i == pagerState.currentPage)
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                                        ),
+                                )
+                                if (i < pages.lastIndex) Spacer(modifier = Modifier.width(6.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 96.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp),
+                contentPadding = PaddingValues(vertical = 8.dp),
+            ) {
+                gridItems(gridItems, key = { it.index }) { (_, app) ->
+                    if (app != null) AppGridItem(app, { launchApp(app.packageName) })
+                    else EmptyGridSlot()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppGridItem(app: InstalledApp, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        AppIconImage(
+            packageName = app.packageName,
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+        Text(
+            text = app.label,
+            fontSize = 11.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 13.sp,
+        )
+    }
+}
+
+@Composable
+private fun EmptyGridSlot() {
+    Column(
+        modifier = Modifier.padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Spacer(modifier = Modifier.size(56.dp))
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun AppIconImage(packageName: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(null, packageName) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(packageName).toBitmap().asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        Image(bitmap = bitmap!!, contentDescription = null, modifier = modifier)
+    } else {
+        Box(modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant))
+    }
+}
+
+// ── Preset manager ────────────────────────────────────────────────────────────
+
+@Composable
+private fun PresetManagerScreen(
+    presets: List<Preset>,
+    onBack: () -> Unit,
+    onEdit: (Preset) -> Unit,
+    onDelete: (Preset) -> Unit,
+    onNewPreset: () -> Unit,
+) {
+    var confirmDeleteId by remember { mutableStateOf<Long?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
+            Text(
+                text = "Presets",
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.width(72.dp))
+        }
+
+        FilledTonalButton(onClick = onNewPreset, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Outlined.Add, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("New preset")
+        }
+
+        if (presets.isEmpty()) {
+            Card {
+                Text(
+                    text = "No presets yet. Create one to set up a Relaxed mode app collection.",
+                    modifier = Modifier.padding(16.dp),
+                    fontSize = 16.sp,
+                )
+            }
+        }
+
+        presets.forEach { preset ->
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(preset.name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                        val appCount = preset.apps.count { it.isNotEmpty() }
+                        val spaceCount = preset.apps.count { it.isEmpty() }
+                        Text(
+                            buildString {
+                                append("$appCount app${if (appCount == 1) "" else "s"}")
+                                if (spaceCount > 0) append(", $spaceCount space${if (spaceCount == 1) "" else "s"}")
+                            },
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        )
+                    }
+                    IconButton(onClick = { onEdit(preset) }) {
+                        Icon(Icons.Outlined.Edit, contentDescription = "Edit")
+                    }
+                    IconButton(onClick = { confirmDeleteId = preset.id }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Delete")
+                    }
+                }
+            }
+        }
+    }
+
+    confirmDeleteId?.let { id ->
+        val preset = presets.find { it.id == id }
+        if (preset != null) {
+            AlertDialog(
+                onDismissRequest = { confirmDeleteId = null },
+                title = { Text("Delete \"${preset.name}\"?") },
+                text = { Text("This removes the preset and its app list.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onDelete(preset)
+                        confirmDeleteId = null
+                    }) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDeleteId = null }) { Text("Cancel") }
+                },
+            )
+        }
+    }
+}
+
+// ── Preset editor ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun PresetEditorScreen(
+    preset: Preset,
+    installedApps: List<InstalledApp>,
+    onBack: () -> Unit,
+    onUpdatePreset: (Preset) -> Unit,
+) {
+    var localName by rememberSaveable(preset.id) { mutableStateOf(preset.name) }
+
+    LaunchedEffect(localName) {
+        if (localName.isBlank()) return@LaunchedEffect
+        delay(500L)
+        if (localName != preset.name) onUpdatePreset(preset.copy(name = localName))
+    }
+
+    val appsInPreset = preset.apps.filter { it.isNotEmpty() }.toSet()
+    val appsToAdd = installedApps.filter { it.packageName !in appsInPreset }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
+            Text(
+                text = "Edit Preset",
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.width(72.dp))
+        }
+
+        OutlinedTextField(
+            value = localName,
+            onValueChange = { localName = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            label = { Text("Preset name") },
+            singleLine = true,
+        )
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp),
+        ) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "In preset",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                    TextButton(onClick = { onUpdatePreset(preset.copy(apps = preset.apps + "")) }) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Add space", fontSize = 14.sp)
+                    }
+                }
+            }
+
+            if (preset.apps.isEmpty()) {
+                item {
+                    Text(
+                        "No apps yet — add from the list below.",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    )
+                }
+            }
+
+            itemsIndexed(preset.apps, key = { i, _ -> i }) { index, pkg ->
+                val app = if (pkg.isNotEmpty()) installedApps.find { it.packageName == pkg } else null
+                PresetItemRow(
+                    pkg = pkg,
+                    app = app,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < preset.apps.lastIndex,
+                    onMoveUp = {
+                        val list = preset.apps.toMutableList()
+                        list.add(index - 1, list.removeAt(index))
+                        onUpdatePreset(preset.copy(apps = list))
+                    },
+                    onMoveDown = {
+                        val list = preset.apps.toMutableList()
+                        list.add(index + 1, list.removeAt(index))
+                        onUpdatePreset(preset.copy(apps = list))
+                    },
+                    onRemove = {
+                        onUpdatePreset(preset.copy(apps = preset.apps.toMutableList().also { it.removeAt(index) }))
+                    },
+                )
+            }
+
+            if (appsToAdd.isNotEmpty()) {
+                item {
+                    Text(
+                        "Add apps",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+                items(appsToAdd, key = { it.packageName }) { app ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AppIconImage(
+                            packageName = app.packageName,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(text = app.label, modifier = Modifier.weight(1f), fontSize = 16.sp)
+                        IconButton(onClick = { onUpdatePreset(preset.copy(apps = preset.apps + app.packageName)) }) {
+                            Icon(Icons.Outlined.Add, contentDescription = "Add")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetItemRow(
+    pkg: String,
+    app: InstalledApp?,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        when {
+            pkg.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("·  ·  ·", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Space",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                )
+            }
+            app != null -> {
+                AppIconImage(
+                    packageName = app.packageName,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(text = app.label, modifier = Modifier.weight(1f), fontSize = 16.sp)
+            }
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Not installed",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
+        Column {
+            IconButton(onClick = onMoveUp, enabled = canMoveUp, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Move up", modifier = Modifier.size(20.dp))
+            }
+            IconButton(onClick = onMoveDown, enabled = canMoveDown, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "Move down", modifier = Modifier.size(20.dp))
+            }
+        }
+
+        IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Outlined.Close, contentDescription = "Remove", modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+// ── Dialogs ───────────────────────────────────────────────────────────────────
 
 @Composable
 private fun PinPromptDialog(
@@ -1134,6 +1947,141 @@ private fun ContactEditorDialog(
                 }
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
+        },
+    )
+}
+
+@Composable
+private fun FirstRunPresetDialog(
+    onAddAll: () -> Unit,
+    onStartBlank: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Set up Relaxed mode") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Choose how to start your first preset.")
+                FilledTonalButton(onClick = onAddAll, modifier = Modifier.fillMaxWidth()) {
+                    Text("Add all installed apps")
+                }
+                OutlinedButton(onClick = onStartBlank, modifier = Modifier.fillMaxWidth()) {
+                    Text("Start blank")
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun PresetPickerDialog(
+    presets: List<Preset>,
+    selectedId: Long?,
+    onSelect: (Preset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose preset") },
+        text = {
+            LazyColumn {
+                items(presets, key = { it.id }) { preset ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(preset) }
+                            .padding(vertical = 12.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (preset.id == selectedId) {
+                            Icon(
+                                Icons.Outlined.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.size(24.dp))
+                        }
+                        Column {
+                            Text(preset.name, fontSize = 18.sp)
+                            val appCount = preset.apps.count { it.isNotEmpty() }
+                            Text(
+                                "$appCount app${if (appCount == 1) "" else "s"}",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun NewPresetNameDialog(
+    onConfirm: (name: String, startWithAll: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var startWithAll by rememberSaveable { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New preset") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding(),
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+                Text(
+                    text = "Start from",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = !startWithAll,
+                        onClick = { startWithAll = false },
+                        label = { Text("Blank") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    FilterChip(
+                        selected = startWithAll,
+                        onClick = { startWithAll = true },
+                        label = { Text("All apps") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (name.isNotBlank()) onConfirm(name.trim(), startWithAll) },
+                enabled = name.isNotBlank(),
+            ) { Text("Create") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }
