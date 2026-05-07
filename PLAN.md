@@ -4,7 +4,7 @@ Current state and what comes next. Keep this updated as decisions are made.
 
 ## What exists
 
-Simple mode is complete:
+Simple mode and Relaxed mode are complete:
 
 - Large-button home screen with Calls and Messages
 - Local contact storage with add/edit/delete (with confirmation) and mutex-safe writes
@@ -16,12 +16,19 @@ Simple mode is complete:
 - Pinned shortcut on first debug launch to simulate Play Store install behaviour
 - App visible in native launcher's app drawer via CATEGORY_LAUNCHER
 
+Relaxed mode is complete:
+
+- Preset data layer (Preset, PresetRepository) with full CRUD via DataStore
+- PresetManagerScreen, PresetEditorScreen, NewPresetNameDialog, PresetPickerDialog, FirstRunPresetDialog
+- Relaxed home screen driven by active preset (paged grid, horizontal/vertical scroll toggle)
+- Admin controls: "Show Relaxed mode button", "Manage presets", "Use phone normally" (native launcher handoff)
+
 ## Architecture decisions
 
 **One app, three layers:**
 
 1. **Simple mode** — built. Mum/user-facing. Home always returns here.
-2. **Standard mode** — not yet built. A curated, distraction-reduced app grid for scheduled off-session time. The person owns and configures it themselves. No admin restriction.
+2. **Relaxed mode** — built. Curated app grid driven by presets. The person owns and configures it themselves. No admin restriction.
 3. **Native launcher** — one-tap handoff from admin. The phone working normally. Home still returns to Mum Launcher. Carer uses this.
 
 Our app stays the default launcher permanently. "Native launcher access" is just launching the old launcher as a regular app — no launcher switching required.
@@ -32,23 +39,17 @@ Kiosk mode was removed. Lock task without device-owner does nothing useful, and 
 
 ## What's next
 
-### Standard mode (middle layer)
-
-The person's own home screen for off-session time. Design decisions to make:
-
-- Shows all installed apps automatically, or person curates what appears?
-- Current lean: show all apps, let them hide ones they don't want to see (hiding temptation is a deliberate choice, not a restriction)
-- Paged grid layout
-- Person can reorder apps
-- No widgets, folders, or gesture nav — feature gap is intentional, this is a focus layer not a full launcher
-
 ### Scheduling
 
-Switches between Simple and Standard mode on a timer. Key questions:
+Switches between Simple and Relaxed mode on a timer. A Codex prototype was built and archived
+at `archive/codex-focus-mode-experiment` — see `CRIB.md` for what to reuse. The scheduling
+logic (`ModeScheduler.kt`) and notification infrastructure (`SchedulePromptController.kt`) are
+solid starting points.
 
-- How does the person set a schedule? (time blocks, recurring, manual override?)
-- What does the transition look like? (silent switch, notification, countdown?)
-- Can the person extend or skip a session?
+Key design questions still open:
+- What does the transition look like? (silent switch, notification prompt, or countdown?)
+- Can the person extend or skip a session from the home screen?
+- Does the schedule live in admin only, or does the person configure it themselves?
 
 ### Further out
 
@@ -59,8 +60,7 @@ Switches between Simple and Standard mode on a timer. Key questions:
 
 ## Open questions
 
-- Standard mode name — "Standard", "Open", "Relaxed"? Needs to feel natural to the person, not clinical.
-- Whether Standard mode needs any scheduling UI of its own, or scheduling is purely an admin/setup concern.
+- Whether scheduling UI belongs in admin only, or the person can configure their own schedule.
 - Whether the carer flow (admin → use normally) needs a more prominent entry point than the admin screen.
 
 ## Known rough edges
