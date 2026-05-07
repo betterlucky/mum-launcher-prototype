@@ -1778,6 +1778,7 @@ private fun RelaxedHomeScreen(
     onBack: () -> Unit,
     onSwitchPreset: () -> Unit,
     onOpenAdmin: () -> Unit = {},
+    onUpdatePreset: ((Preset) -> Unit)? = null,
     duePrompt: DuePrompt? = null,
     allowSkip: Boolean = false,
     allowDelay: Boolean = false,
@@ -1787,6 +1788,38 @@ private fun RelaxedHomeScreen(
     onExtendSession: () -> Unit = {},
 ) {
     var showExtendDialog by remember { mutableStateOf(false) }
+    var editMode by remember { mutableStateOf(false) }
+    var selectedIndex by remember { mutableStateOf<Int?>(null) }
+
+    fun swapItems(a: Int, b: Int) {
+        val list = preset.apps.toMutableList()
+        val tmp = list[a]; list[a] = list[b]; list[b] = tmp
+        onUpdatePreset?.invoke(preset.copy(apps = list))
+        selectedIndex = null
+    }
+
+    fun removeItem(idx: Int) {
+        val list = preset.apps.toMutableList()
+        list.removeAt(idx)
+        onUpdatePreset?.invoke(preset.copy(apps = list))
+        selectedIndex = null
+    }
+
+    fun insertGap(atIdx: Int) {
+        val list = preset.apps.toMutableList()
+        list.add(atIdx, "")
+        onUpdatePreset?.invoke(preset.copy(apps = list))
+        selectedIndex = null
+    }
+
+    fun onItemTap(idx: Int) {
+        val sel = selectedIndex
+        when {
+            sel == idx -> selectedIndex = null
+            sel != null -> swapItems(sel, idx)
+            else -> selectedIndex = idx
+        }
+    }
 
     if (showExtendDialog) {
         AlertDialog(
@@ -1842,7 +1875,11 @@ private fun RelaxedHomeScreen(
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
             )
-            if (allowExtend && duePrompt?.action == PromptAction.EXIT_FOCUS) {
+            if (editMode) {
+                TextButton(onClick = { editMode = false; selectedIndex = null }) {
+                    Text("Done", fontSize = 16.sp)
+                }
+            } else if (allowExtend && duePrompt?.action == PromptAction.EXIT_FOCUS) {
                 TextButton(onClick = { showExtendDialog = true }) {
                     Text("Extend", fontSize = 16.sp)
                 }
@@ -1852,6 +1889,26 @@ private fun RelaxedHomeScreen(
                 }
             } else {
                 Spacer(modifier = Modifier.width(48.dp))
+            }
+        }
+
+        if (editMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "To add apps, use Admin → Manage Presets",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = { insertGap(selectedIndex ?: preset.apps.size) }) {
+                    Text("Add gap")
+                }
             }
         }
 
@@ -1914,10 +1971,25 @@ private fun RelaxedHomeScreen(
                         ) {
                             pageItems.chunked(colCount).forEach { rowItems ->
                                 Row(modifier = Modifier.fillMaxWidth()) {
-                                    rowItems.forEach { (_, app) ->
+                                    rowItems.forEach { (idx, app) ->
                                         Box(modifier = Modifier.weight(1f)) {
-                                            if (app != null) AppGridItem(app, { launchApp(app.packageName) })
-                                            else EmptyGridSlot()
+                                            if (app != null) {
+                                                AppGridItem(
+                                                    app = app,
+                                                    onClick = { if (editMode) onItemTap(idx) else launchApp(app.packageName) },
+                                                    editMode = editMode,
+                                                    selected = selectedIndex == idx,
+                                                    onLongPress = { editMode = true; selectedIndex = idx },
+                                                    onRemove = { removeItem(idx) },
+                                                )
+                                            } else {
+                                                EmptyGridSlot(
+                                                    editMode = editMode,
+                                                    selected = selectedIndex == idx,
+                                                    onClick = { if (editMode) onItemTap(idx) },
+                                                    onRemove = { removeItem(idx) },
+                                                )
+                                            }
                                         }
                                     }
                                     repeat(colCount - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
@@ -1960,50 +2032,131 @@ private fun RelaxedHomeScreen(
                     .padding(horizontal = 8.dp),
                 contentPadding = PaddingValues(vertical = 8.dp),
             ) {
-                gridItems(gridItems, key = { it.index }) { (_, app) ->
-                    if (app != null) AppGridItem(app, { launchApp(app.packageName) })
-                    else EmptyGridSlot()
+                gridItems(gridItems, key = { it.index }) { (idx, app) ->
+                    if (app != null) {
+                        AppGridItem(
+                            app = app,
+                            onClick = { if (editMode) onItemTap(idx) else launchApp(app.packageName) },
+                            editMode = editMode,
+                            selected = selectedIndex == idx,
+                            onLongPress = { editMode = true; selectedIndex = idx },
+                            onRemove = { removeItem(idx) },
+                        )
+                    } else {
+                        EmptyGridSlot(
+                            editMode = editMode,
+                            selected = selectedIndex == idx,
+                            onClick = { if (editMode) onItemTap(idx) },
+                            onRemove = { removeItem(idx) },
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AppGridItem(app: InstalledApp, onClick: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        AppIconImage(
-            packageName = app.packageName,
+private fun AppGridItem(
+    app: InstalledApp,
+    onClick: () -> Unit,
+    editMode: Boolean = false,
+    selected: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
+    onRemove: (() -> Unit)? = null,
+) {
+    Box {
+        Column(
             modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(12.dp)),
-        )
-        Text(
-            text = app.label,
-            fontSize = 11.sp,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            lineHeight = 13.sp,
-        )
+                .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+                .padding(8.dp)
+                .then(
+                    if (selected) Modifier.background(
+                        MaterialTheme.colorScheme.primaryContainer,
+                        RoundedCornerShape(8.dp),
+                    ) else Modifier,
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            AppIconImage(
+                packageName = app.packageName,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+            Text(
+                text = app.label,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = 13.sp,
+            )
+        }
+        if (editMode && onRemove != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error)
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("×", color = MaterialTheme.colorScheme.onError, fontSize = 14.sp, lineHeight = 14.sp)
+            }
+        }
     }
 }
 
 @Composable
-private fun EmptyGridSlot() {
-    Column(
-        modifier = Modifier.padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Spacer(modifier = Modifier.size(56.dp))
-        Spacer(modifier = Modifier.height(20.dp))
+private fun EmptyGridSlot(
+    editMode: Boolean = false,
+    selected: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    onRemove: (() -> Unit)? = null,
+) {
+    Box {
+        Column(
+            modifier = Modifier
+                .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+                .padding(8.dp)
+                .then(
+                    if (selected) Modifier.background(
+                        MaterialTheme.colorScheme.primaryContainer,
+                        RoundedCornerShape(8.dp),
+                    ) else Modifier,
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .then(
+                        if (editMode) Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                        else Modifier,
+                    ),
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+        if (editMode && onRemove != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error)
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("×", color = MaterialTheme.colorScheme.onError, fontSize = 14.sp, lineHeight = 14.sp)
+            }
+        }
     }
 }
 
