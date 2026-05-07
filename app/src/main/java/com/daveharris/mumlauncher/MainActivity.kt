@@ -1,6 +1,7 @@
 package com.daveharris.mumlauncher
 
 import android.app.admin.DevicePolicyManager
+import android.content.pm.PackageManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -217,6 +218,12 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { contactRepository.delete(contact) }
     }
 
+    fun saveNativeLauncherIfNeeded(context: Context) {
+        if (uiState.value.settings.nativeLauncherPackage != null) return
+        val info = detectNativeLauncher(context) ?: return
+        viewModelScope.launch { settingsStore.setNativeLauncher(info.first, info.second) }
+    }
+
     private val _diagnostics = MutableStateFlow<Diagnostics?>(null)
     internal val diagnostics: StateFlow<Diagnostics?> = _diagnostics
 
@@ -341,7 +348,10 @@ private fun LauncherApp(
     if (!uiState.settings.setupComplete) {
         BackHandler {}
         SetupScreen(
-            onOpenHomeSettings = { openHomeSettings(context) },
+            onOpenHomeSettings = {
+                viewModel.saveNativeLauncherIfNeeded(context)
+                openHomeSettings(context)
+            },
             onEnableDeviceAdmin = { requestDeviceAdmin(context) },
             onFinishSetup = { pin -> viewModel.completeSetup(pin) },
         )
@@ -409,6 +419,9 @@ private fun LauncherApp(
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
+                    onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
+                        { openNativeLauncher(context, pkg) }
+                    },
                     onOpenHomeSettings = { openHomeSettings(context) },
                     onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
                     onEnableDeviceAdmin = { requestDeviceAdmin(context) },
@@ -515,12 +528,35 @@ private fun requestDeviceAdmin(context: Context) {
     context.startActivity(intent)
 }
 
+private fun detectNativeLauncher(context: Context): Pair<String, String>? {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+    val info = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        ?: return null
+    val pkg = info.activityInfo.packageName
+    if (pkg == context.packageName || pkg == "android") return null
+    val label = info.loadLabel(context.packageManager).toString()
+    return Pair(pkg, label)
+}
+
 private fun openHomeSettings(context: Context) {
     val intent = Intent(Settings.ACTION_HOME_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { context.startActivity(intent) }
         .onFailure {
             Toast.makeText(context, "Home app settings are not available on this phone.", Toast.LENGTH_LONG).show()
         }
+}
+
+private fun openNativeLauncher(context: Context, packageName: String) {
+    val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent != null) {
+        runCatching { context.startActivity(intent) }
+            .onFailure {
+                Toast.makeText(context, "Could not open the previous launcher.", Toast.LENGTH_SHORT).show()
+            }
+    } else {
+        Toast.makeText(context, "Previous launcher is no longer installed.", Toast.LENGTH_SHORT).show()
+    }
 }
 
 private fun openAccessibilitySettings(context: Context) {
@@ -925,6 +961,7 @@ private fun AdminScreen(
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
+    onUsePhoneNormally: (() -> Unit)?,
     onOpenHomeSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onEnableDeviceAdmin: () -> Unit,
@@ -959,6 +996,19 @@ private fun AdminScreen(
             checked = settings.kioskEnabled,
             onCheckedChange = onToggleKiosk,
         )
+
+        if (onUsePhoneNormally != null) {
+            val launcherLabel = settings.nativeLauncherLabel ?: "previous launcher"
+            Button(
+                onClick = onUsePhoneNormally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp),
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Text("Use phone normally (open $launcherLabel)", fontSize = 18.sp)
+            }
+        }
 
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
