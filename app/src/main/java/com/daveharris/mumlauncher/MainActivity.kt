@@ -100,6 +100,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 private enum class Screen {
     HOME,
@@ -152,8 +155,36 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         }
     }
 
+    private var failedPinAttempts = 0
+    private var pinLockedUntil = 0L
+
     fun verifyPin(pin: String, onResult: (Boolean) -> Unit) {
-        onResult(hashPin(pin) == uiState.value.settings.pinHash)
+        val now = System.currentTimeMillis()
+        if (now < pinLockedUntil) {
+            val remainingSecs = ((pinLockedUntil - now) / 1000).coerceAtLeast(1)
+            transientError.value = "Too many attempts. Try again in ${remainingSecs}s."
+            onResult(false)
+            return
+        }
+        val valid = verifyPinHash(pin, uiState.value.settings.pinHash)
+        if (valid) {
+            failedPinAttempts = 0
+            pinLockedUntil = 0L
+            onResult(true)
+        } else {
+            failedPinAttempts++
+            val lockMs = when {
+                failedPinAttempts >= 9 -> 5 * 60 * 1000L
+                failedPinAttempts >= 6 -> 30 * 1000L
+                failedPinAttempts >= 3 -> 5 * 1000L
+                else -> 0L
+            }
+            if (lockMs > 0) {
+                pinLockedUntil = now + lockMs
+                transientError.value = "Incorrect PIN. Locked for ${lockMs / 1000}s."
+            }
+            onResult(false)
+        }
     }
 
     fun setAllowUserEditing(allowed: Boolean) {
@@ -186,9 +217,40 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { contactRepository.delete(contact) }
     }
 
+    private val _diagnostics = MutableStateFlow<Diagnostics?>(null)
+    internal val diagnostics: StateFlow<Diagnostics?> = _diagnostics
+
+    fun refreshDiagnostics() {
+        _diagnostics.value = buildDiagnosticsFromApp(getApplication())
+    }
+
     private fun hashPin(pin: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(pin.toByteArray()).joinToString("") { "%02x".format(it) }
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val saltHex = salt.joinToString("") { "%02x".format(it) }
+        return "$saltHex:${pbkdf2Hash(pin, salt)}"
+    }
+
+    private fun verifyPinHash(pin: String, stored: String?): Boolean {
+        if (stored == null) return false
+        return if (':' in stored) {
+            val colonIdx = stored.indexOf(':')
+            val saltHex = stored.substring(0, colonIdx)
+            val expectedHash = stored.substring(colonIdx + 1)
+            val salt = saltHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            pbkdf2Hash(pin, salt) == expectedHash
+        } else {
+            // Legacy SHA-256 fallback for existing installs
+            MessageDigest.getInstance("SHA-256")
+                .digest(pin.toByteArray())
+                .joinToString("") { "%02x".format(it) } == stored
+        }
+    }
+
+    private fun pbkdf2Hash(pin: String, salt: ByteArray): String {
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 100_000, 256)
+        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            .generateSecret(spec).encoded
+            .joinToString("") { "%02x".format(it) }
     }
 }
 
@@ -250,6 +312,7 @@ private fun LauncherApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val diagnostics by viewModel.diagnostics.collectAsState()
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
@@ -334,10 +397,12 @@ private fun LauncherApp(
                     onDelete = viewModel::deleteContact,
                 )
 
-                Screen.ADMIN -> AdminScreen(
+                Screen.ADMIN -> {
+                    LaunchedEffect(Unit) { viewModel.refreshDiagnostics() }
+                    AdminScreen(
                     settings = uiState.settings,
                     contacts = uiState.contacts,
-                    diagnostics = buildDiagnostics(context),
+                    diagnostics = diagnostics,
                     onBack = { screen = Screen.HOME },
                     onToggleEditing = viewModel::setAllowUserEditing,
                     onToggleKiosk = viewModel::setKioskEnabled,
@@ -348,6 +413,7 @@ private fun LauncherApp(
                     onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
                     onEnableDeviceAdmin = { requestDeviceAdmin(context) },
                 )
+                }
             }
         }
     }
@@ -400,7 +466,7 @@ private fun LauncherApp(
     }
 }
 
-private data class Diagnostics(
+internal data class Diagnostics(
     val batteryPercent: Int,
     val networkSummary: String,
     val isDeviceAdminEnabled: Boolean,
@@ -411,7 +477,7 @@ private data class Diagnostics(
     val allowlistedPackages: List<String>,
 )
 
-private fun buildDiagnostics(context: Context): Diagnostics {
+private fun buildDiagnosticsFromApp(context: Context): Diagnostics {
     val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
     val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val capabilities = runCatching {
@@ -788,6 +854,20 @@ private fun ContactCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete contact") },
+            text = { Text("Delete ${contact.displayName}?") },
+            confirmButton = {
+                TextButton(onClick = { onDelete(); showDeleteConfirm = false }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
     Card(
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -825,7 +905,7 @@ private fun ContactCard(
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Outlined.Edit, contentDescription = "Edit")
                     }
-                    IconButton(onClick = onDelete) {
+                    IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Outlined.Delete, contentDescription = "Delete")
                     }
                 }
@@ -838,7 +918,7 @@ private fun ContactCard(
 private fun AdminScreen(
     settings: LauncherSettings,
     contacts: List<Contact>,
-    diagnostics: Diagnostics,
+    diagnostics: Diagnostics?,
     onBack: () -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleKiosk: (Boolean) -> Unit,
@@ -883,14 +963,18 @@ private fun AdminScreen(
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Diagnostics", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("Battery: ${diagnostics.batteryPercent}%")
-                Text("Network: ${diagnostics.networkSummary}")
-                Text("Device admin: ${if (diagnostics.isDeviceAdminEnabled) "Enabled" else "Not enabled"}")
-                Text("Device owner: ${if (diagnostics.isDeviceOwner) "Enabled" else "Not enabled"}")
-                Text("Lock task allowed: ${if (diagnostics.isLockTaskPermitted) "Yes" else "No"}")
-                Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
-                Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
-                Text("Kiosk allowlist: ${diagnostics.allowlistedPackages.joinToString()}")
+                if (diagnostics == null) {
+                    Text("Loading…")
+                } else {
+                    Text("Battery: ${diagnostics.batteryPercent}%")
+                    Text("Network: ${diagnostics.networkSummary}")
+                    Text("Device admin: ${if (diagnostics.isDeviceAdminEnabled) "Enabled" else "Not enabled"}")
+                    Text("Device owner: ${if (diagnostics.isDeviceOwner) "Enabled" else "Not enabled"}")
+                    Text("Lock task allowed: ${if (diagnostics.isLockTaskPermitted) "Yes" else "No"}")
+                    Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
+                    Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
+                    Text("Kiosk allowlist: ${diagnostics.allowlistedPackages.joinToString()}")
+                }
                 FilledTonalButton(onClick = onOpenHomeSettings) { Text("Open Home Settings") }
                 FilledTonalButton(onClick = onEnableDeviceAdmin) { Text("Open Device Admin") }
                 FilledTonalButton(onClick = onOpenAccessibilitySettings) { Text("Open Accessibility Settings") }
