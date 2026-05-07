@@ -5,12 +5,12 @@ An Android launcher built around one real problem: smartphones are too complicat
 The app has three layers:
 
 - **Simple mode** — a large-button home screen with only Calls and Messages. This is what the person being supported sees.
-- **Standard mode** — a curated app grid for scheduled off-session time. Not yet built.
+- **Relaxed mode** — a curated app grid driven by presets, for scheduled off-session time. The person configures it themselves.
 - **Native launcher** — one tap in admin hands the phone back to the original launcher for full use. Home always returns to Mum Launcher.
 
 ## Current state
 
-Simple mode is complete and functional. Standard mode and scheduling are next. Tested on a Motorola Moto G85 running Android 15.
+Simple mode and Relaxed mode are complete. Scheduling (switching between them on a timer) is next. Tested on a Motorola Moto G85 running Android 15.
 
 The app name is under discussion — working name is **Dial It Back**.
 
