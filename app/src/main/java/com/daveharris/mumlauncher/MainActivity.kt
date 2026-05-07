@@ -164,6 +164,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     private var pinLockedUntil = 0L
 
     fun verifyPin(pin: String, onResult: (Boolean) -> Unit) {
+        if (uiState.value.settings.pinHash == null) {
+            onResult(true)
+            return
+        }
         val now = System.currentTimeMillis()
         if (now < pinLockedUntil) {
             val remainingSecs = ((pinLockedUntil - now) / 1000).coerceAtLeast(1)
