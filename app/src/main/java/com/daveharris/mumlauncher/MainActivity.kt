@@ -94,6 +94,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -444,9 +445,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 }
 
 class MainActivity : ComponentActivity() {
-    private val rehideSystemUi = Runnable { hideSystemUi() }
+    private val rehideSystemUi = Runnable { applySystemUi() }
 
     val pendingPromptAction = kotlinx.coroutines.flow.MutableStateFlow<PromptAction?>(null)
+    var relaxedModeActive: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -484,22 +486,32 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         window.decorView.removeCallbacks(rehideSystemUi)
-        hideSystemUi()
+        applySystemUi()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
             window.decorView.removeCallbacks(rehideSystemUi)
-            hideSystemUi()
+            applySystemUi()
+        }
+    }
+
+    fun applySystemUi() {
+        val controller = window.insetsController ?: return
+        if (relaxedModeActive) {
+            controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_DEFAULT
+            controller.show(WindowInsets.Type.statusBars())
+            controller.hide(WindowInsets.Type.navigationBars())
+        } else {
+            controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsets.Type.systemBars())
         }
     }
 
     fun hideSystemUi() {
-        val controller = window.insetsController ?: return
-        controller.systemBarsBehavior =
-            WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsets.Type.systemBars())
+        relaxedModeActive = false
+        applySystemUi()
     }
 }
 
@@ -522,6 +534,12 @@ private fun LauncherApp(
     var showNewPresetDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { activity.hideSystemUi() }
+
+    val isRelaxed = screen == Screen.RELAXED
+    SideEffect {
+        activity.relaxedModeActive = isRelaxed
+        activity.applySystemUi()
+    }
 
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
@@ -688,8 +706,16 @@ private fun LauncherApp(
                             showSwitchButton = uiState.presets.size > 1,
                             onBack = { screen = Screen.HOME },
                             onSwitchPreset = { showPresetPicker = true },
+                            onOpenAdmin = {
+                                if (uiState.settings.pinHash == null) screen = Screen.ADMIN
+                                else showPinPrompt = true
+                            },
                             duePrompt = duePrompt,
+                            allowSkip = uiState.settings.allowUserSkipSession,
+                            allowDelay = uiState.settings.allowUserDelaySession,
                             allowExtend = uiState.settings.allowUserExtendSession,
+                            onSkipSession = { viewModel.skipCurrentWindow(context) },
+                            onDelaySession = { viewModel.delaySessionStart(context) },
                             onExtendSession = { viewModel.extendCurrentSession(context) },
                         )
                     } else {
@@ -1751,8 +1777,13 @@ private fun RelaxedHomeScreen(
     showSwitchButton: Boolean,
     onBack: () -> Unit,
     onSwitchPreset: () -> Unit,
+    onOpenAdmin: () -> Unit = {},
     duePrompt: DuePrompt? = null,
+    allowSkip: Boolean = false,
+    allowDelay: Boolean = false,
     allowExtend: Boolean = false,
+    onSkipSession: () -> Unit = {},
+    onDelaySession: () -> Unit = {},
     onExtendSession: () -> Unit = {},
 ) {
     var showExtendDialog by remember { mutableStateOf(false) }
@@ -1801,10 +1832,12 @@ private fun RelaxedHomeScreen(
             TextButton(
                 onClick = onBack,
                 modifier = Modifier.fillMaxHeight(),
-            ) { Text("Back", fontSize = 18.sp) }
+            ) { Text("Simple", fontSize = 18.sp) }
             Text(
                 text = preset.name,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(onClick = onOpenAdmin),
                 textAlign = TextAlign.Center,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
@@ -1819,6 +1852,28 @@ private fun RelaxedHomeScreen(
                 }
             } else {
                 Spacer(modifier = Modifier.width(48.dp))
+            }
+        }
+
+        if (duePrompt?.action == PromptAction.ENTER_FOCUS && (allowSkip || allowDelay)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (allowSkip) {
+                    OutlinedButton(
+                        onClick = onSkipSession,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Skip session") }
+                }
+                if (allowDelay) {
+                    OutlinedButton(
+                        onClick = onDelaySession,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("15 more min") }
+                }
             }
         }
 
