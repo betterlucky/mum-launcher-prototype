@@ -530,10 +530,6 @@ private fun LauncherApp(
         }
     }
 
-    if (!uiState.settings.setupComplete) {
-        LaunchedEffect(Unit) { requestPinShortcut(context) }
-    }
-
     val duePrompt = remember(uiState.settings) {
         currentDuePrompt(uiState.settings, System.currentTimeMillis())
     }
@@ -880,10 +876,7 @@ private fun openHomeSettings(context: Context) {
 
 private fun requestPinShortcut(context: Context) {
     val sm = context.getSystemService(ShortcutManager::class.java)
-    if (!sm.isRequestPinShortcutSupported) {
-        Toast.makeText(context, "This launcher doesn't support pinned shortcuts.", Toast.LENGTH_SHORT).show()
-        return
-    }
+    if (!sm.isRequestPinShortcutSupported) return
     val shortcut = ShortcutInfo.Builder(context, "main_shortcut")
         .setShortLabel(context.getString(R.string.app_name))
         .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
