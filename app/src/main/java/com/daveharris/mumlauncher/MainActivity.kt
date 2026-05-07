@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.Settings
+import android.app.TimePickerDialog
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.Toast
@@ -25,6 +26,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -127,12 +130,14 @@ import com.daveharris.mumlauncher.data.Preset
 import com.daveharris.mumlauncher.data.PresetRepository
 import com.daveharris.mumlauncher.data.SettingsStore
 import com.daveharris.mumlauncher.ui.theme.MumLauncherTheme
+import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -325,6 +330,74 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { presetRepository.delete(id) }
     }
 
+    fun setSchedulingEnabled(context: Context, enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setSchedulingEnabled(enabled)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun setScheduleDays(context: Context, days: Set<Int>) {
+        viewModelScope.launch {
+            settingsStore.setScheduleDays(days)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun setScheduleStartMinutes(context: Context, minutes: Int) {
+        viewModelScope.launch {
+            settingsStore.setScheduleStartMinutes(minutes)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun setScheduleEndMinutes(context: Context, minutes: Int) {
+        viewModelScope.launch {
+            settingsStore.setScheduleEndMinutes(minutes)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun setScheduledMode(mode: com.daveharris.mumlauncher.data.LauncherMode) {
+        viewModelScope.launch { settingsStore.setScheduledMode(mode) }
+    }
+
+    fun setScheduleAudioAlert(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setScheduleAudioAlert(enabled) }
+    }
+
+    fun setAllowUserSkipExtend(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setAllowUserSkipExtend(enabled) }
+    }
+
+    fun acknowledgePrompt(context: Context, action: PromptAction, anchor: String) {
+        viewModelScope.launch {
+            when (action) {
+                PromptAction.ENTER_FOCUS -> settingsStore.setFocusSession(true, anchor)
+                PromptAction.EXIT_FOCUS -> settingsStore.setFocusSession(false, null)
+            }
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun skipCurrentWindow(context: Context) {
+        viewModelScope.launch {
+            val settings = settingsStore.settings.first()
+            val window = currentScheduledWindow(settings, System.currentTimeMillis())
+            val untilMs = window?.endMs ?: (System.currentTimeMillis() + 24 * 60 * 60 * 1000L)
+            settingsStore.setScheduleSkippedUntil(untilMs)
+            settingsStore.setFocusSession(false, null)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
+    fun extendCurrentSession(context: Context) {
+        viewModelScope.launch {
+            settingsStore.setScheduleSkippedUntil(System.currentTimeMillis() + 30 * 60 * 1000L)
+            SchedulePromptController.sync(context, settingsStore.settings.first())
+        }
+    }
+
     private fun hashPin(pin: String): String {
         val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
         val saltHex = salt.joinToString("") { "%02x".format(it) }
@@ -358,8 +431,11 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 class MainActivity : ComponentActivity() {
     private val rehideSystemUi = Runnable { hideSystemUi() }
 
+    val pendingPromptAction = kotlinx.coroutines.flow.MutableStateFlow<PromptAction?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingPromptAction.value = PromptAction.from(intent?.getStringExtra(EXTRA_PROMPT_ACTION))
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
@@ -382,6 +458,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingPromptAction.value = PromptAction.from(intent.getStringExtra(EXTRA_PROMPT_ACTION))
     }
 
     override fun onResume() {
@@ -435,6 +517,34 @@ private fun LauncherApp(
 
     if (!uiState.settings.setupComplete) {
         LaunchedEffect(Unit) { requestPinShortcut(context) }
+    }
+
+    val duePrompt = remember(uiState.settings) {
+        currentDuePrompt(uiState.settings, System.currentTimeMillis())
+    }
+
+    val promptAction by activity.pendingPromptAction.collectAsState()
+    LaunchedEffect(promptAction) {
+        val action = promptAction ?: return@LaunchedEffect
+        activity.pendingPromptAction.value = null
+        val settings = uiState.settings
+        val nowMs = System.currentTimeMillis()
+        val window = currentScheduledWindow(settings, nowMs)
+            ?: mostRecentEndedWindow(settings, nowMs)
+        val anchor = window?.anchor ?: return@LaunchedEffect
+        viewModel.acknowledgePrompt(context, action, anchor)
+        when (action) {
+            PromptAction.ENTER_FOCUS -> when (settings.scheduledMode) {
+                com.daveharris.mumlauncher.data.LauncherMode.RELAXED -> {
+                    if (uiState.presets.isNotEmpty()) {
+                        activePresetId = activePresetId ?: uiState.presets.first().id
+                        screen = Screen.RELAXED
+                    }
+                }
+                com.daveharris.mumlauncher.data.LauncherMode.SIMPLE -> screen = Screen.HOME
+            }
+            PromptAction.EXIT_FOCUS -> screen = Screen.HOME
+        }
     }
 
     if (!uiState.settings.setupComplete) {
@@ -491,6 +601,9 @@ private fun LauncherApp(
                     },
                     showRelaxedButton = uiState.settings.showRelaxedButton,
                     onOpenRelaxed = { enterRelaxed() },
+                    duePrompt = duePrompt,
+                    allowSkipExtend = uiState.settings.allowUserSkipExtend,
+                    onSkipSession = { viewModel.skipCurrentWindow(context) },
                 )
 
                 Screen.CALLS -> ContactListScreen(
@@ -535,6 +648,15 @@ private fun LauncherApp(
                         onOpenPresets = { screen = Screen.PRESET_MANAGER },
                         onOpenHomeSettings = { openHomeSettings(context) },
                         onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
+                        onSetSchedulingEnabled = { viewModel.setSchedulingEnabled(context, it) },
+                        onSetScheduleDays = { viewModel.setScheduleDays(context, it) },
+                        onSetScheduleStart = { viewModel.setScheduleStartMinutes(context, it) },
+                        onSetScheduleEnd = { viewModel.setScheduleEndMinutes(context, it) },
+                        onSetScheduledMode = { viewModel.setScheduledMode(it) },
+                        onSetAudioAlert = { viewModel.setScheduleAudioAlert(it) },
+                        onSetAllowSkipExtend = { viewModel.setAllowUserSkipExtend(it) },
+                        onOpenNotificationSettings = { SchedulePromptController.openNotificationSettings(context) },
+                        onOpenAlarmSettings = { SchedulePromptController.openExactAlarmSettings(context) },
                     )
                 }
 
@@ -551,6 +673,9 @@ private fun LauncherApp(
                             onToggleScroll = {
                                 viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal)
                             },
+                            duePrompt = duePrompt,
+                            allowSkipExtend = uiState.settings.allowUserSkipExtend,
+                            onExtendSession = { viewModel.extendCurrentSession(context) },
                         )
                     } else {
                         screen = Screen.HOME
@@ -907,7 +1032,35 @@ private fun HomeScreen(
     onOpenAdmin: () -> Unit,
     showRelaxedButton: Boolean,
     onOpenRelaxed: () -> Unit,
+    duePrompt: DuePrompt? = null,
+    allowSkipExtend: Boolean = false,
+    onSkipSession: () -> Unit = {},
 ) {
+    var showSkipDialog by remember { mutableStateOf(false) }
+
+    if (showSkipDialog && duePrompt != null) {
+        AlertDialog(
+            onDismissRequest = { showSkipDialog = false },
+            title = { Text("Session") },
+            text = {
+                Text(
+                    when (duePrompt.action) {
+                        PromptAction.ENTER_FOCUS -> "Skip the scheduled session and stay as you are?"
+                        PromptAction.EXIT_FOCUS -> "The session has ended — tap Skip to stay in this mode a bit longer."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onSkipSession(); showSkipDialog = false }) {
+                    Text("Skip")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSkipDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableStateOf(0L) }
 
@@ -970,6 +1123,23 @@ private fun HomeScreen(
                     Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(22.dp))
                     Spacer(modifier = Modifier.width(10.dp))
                     Text("Relaxed Mode", fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            if (allowSkipExtend && duePrompt != null) {
+                OutlinedButton(
+                    onClick = { showSkipDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp),
+                    shape = RoundedCornerShape(20.dp),
+                ) {
+                    Text(
+                        when (duePrompt.action) {
+                            PromptAction.ENTER_FOCUS -> "Skip session"
+                            PromptAction.EXIT_FOCUS -> "Not yet"
+                        },
+                        fontSize = 18.sp,
+                    )
                 }
             }
         }
@@ -1181,7 +1351,17 @@ private fun AdminScreen(
     onOpenPresets: () -> Unit,
     onOpenHomeSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onSetSchedulingEnabled: (Boolean) -> Unit,
+    onSetScheduleDays: (Set<Int>) -> Unit,
+    onSetScheduleStart: (Int) -> Unit,
+    onSetScheduleEnd: (Int) -> Unit,
+    onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
+    onSetAudioAlert: (Boolean) -> Unit,
+    onSetAllowSkipExtend: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenAlarmSettings: () -> Unit,
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1248,6 +1428,19 @@ private fun AdminScreen(
             }
         }
 
+        ScheduleCard(
+            settings = settings,
+            onSetSchedulingEnabled = onSetSchedulingEnabled,
+            onSetScheduleDays = onSetScheduleDays,
+            onSetScheduleStart = onSetScheduleStart,
+            onSetScheduleEnd = onSetScheduleEnd,
+            onSetScheduledMode = onSetScheduledMode,
+            onSetAudioAlert = onSetAudioAlert,
+            onSetAllowSkipExtend = onSetAllowSkipExtend,
+            onOpenNotificationSettings = onOpenNotificationSettings,
+            onOpenAlarmSettings = onOpenAlarmSettings,
+        )
+
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Diagnostics", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
@@ -1282,6 +1475,176 @@ private fun AdminScreen(
                 onEdit = { onEdit(contact) },
                 onDelete = { onDelete(contact) },
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ScheduleCard(
+    settings: LauncherSettings,
+    onSetSchedulingEnabled: (Boolean) -> Unit,
+    onSetScheduleDays: (Set<Int>) -> Unit,
+    onSetScheduleStart: (Int) -> Unit,
+    onSetScheduleEnd: (Int) -> Unit,
+    onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
+    onSetAudioAlert: (Boolean) -> Unit,
+    onSetAllowSkipExtend: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenAlarmSettings: () -> Unit,
+) {
+    val context = LocalContext.current
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showEndPicker by remember { mutableStateOf(false) }
+
+    if (showStartPicker) {
+        TimePickerDialog(
+            context,
+            { _, h, m -> onSetScheduleStart(h * 60 + m); showStartPicker = false },
+            settings.scheduleStartMinutes / 60,
+            settings.scheduleStartMinutes % 60,
+            true,
+        ).apply { setOnDismissListener { showStartPicker = false } }.show()
+    }
+    if (showEndPicker) {
+        TimePickerDialog(
+            context,
+            { _, h, m -> onSetScheduleEnd(h * 60 + m); showEndPicker = false },
+            settings.scheduleEndMinutes / 60,
+            settings.scheduleEndMinutes % 60,
+            true,
+        ).apply { setOnDismissListener { showEndPicker = false } }.show()
+    }
+
+    Card {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Schedule",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Switch(checked = settings.schedulingEnabled, onCheckedChange = onSetSchedulingEnabled)
+            }
+
+            if (settings.schedulingEnabled) {
+                Text("Days", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                val dayLabels = listOf(
+                    Calendar.MONDAY to "Mon",
+                    Calendar.TUESDAY to "Tue",
+                    Calendar.WEDNESDAY to "Wed",
+                    Calendar.THURSDAY to "Thu",
+                    Calendar.FRIDAY to "Fri",
+                    Calendar.SATURDAY to "Sat",
+                    Calendar.SUNDAY to "Sun",
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    dayLabels.forEach { (day, label) ->
+                        FilterChip(
+                            selected = settings.scheduleDays.contains(day),
+                            onClick = {
+                                val newDays = if (settings.scheduleDays.contains(day)) {
+                                    settings.scheduleDays - day
+                                } else {
+                                    settings.scheduleDays + day
+                                }
+                                onSetScheduleDays(newDays)
+                            },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Start", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        OutlinedButton(
+                            onClick = { showStartPicker = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                "%02d:%02d".format(
+                                    settings.scheduleStartMinutes / 60,
+                                    settings.scheduleStartMinutes % 60,
+                                ),
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("End", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        OutlinedButton(
+                            onClick = { showEndPicker = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                "%02d:%02d".format(
+                                    settings.scheduleEndMinutes / 60,
+                                    settings.scheduleEndMinutes % 60,
+                                ),
+                            )
+                        }
+                    }
+                }
+
+                Text("Switch to", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.daveharris.mumlauncher.data.LauncherMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = settings.scheduledMode == mode,
+                            onClick = { onSetScheduledMode(mode) },
+                            label = {
+                                Text(
+                                    when (mode) {
+                                        com.daveharris.mumlauncher.data.LauncherMode.SIMPLE -> "Simple"
+                                        com.daveharris.mumlauncher.data.LauncherMode.RELAXED -> "Relaxed"
+                                    },
+                                )
+                            },
+                        )
+                    }
+                }
+
+                ToggleCard(
+                    title = "Audio alert at transition",
+                    checked = settings.scheduleAudioAlert,
+                    onCheckedChange = onSetAudioAlert,
+                )
+                ToggleCard(
+                    title = "Allow person to skip/extend session",
+                    checked = settings.allowUserSkipExtend,
+                    onCheckedChange = onSetAllowSkipExtend,
+                )
+
+                if (!SchedulePromptController.canPostNotifications(context)) {
+                    FilledTonalButton(
+                        onClick = onOpenNotificationSettings,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Enable notifications (required)")
+                    }
+                }
+                if (!SchedulePromptController.canScheduleExactAlarms(context)) {
+                    FilledTonalButton(
+                        onClick = onOpenAlarmSettings,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Allow exact alarms (recommended)")
+                    }
+                }
+            }
         }
     }
 }
@@ -1321,7 +1684,28 @@ private fun RelaxedHomeScreen(
     onBack: () -> Unit,
     onSwitchPreset: () -> Unit,
     onToggleScroll: () -> Unit,
+    duePrompt: DuePrompt? = null,
+    allowSkipExtend: Boolean = false,
+    onExtendSession: () -> Unit = {},
 ) {
+    var showExtendDialog by remember { mutableStateOf(false) }
+
+    if (showExtendDialog) {
+        AlertDialog(
+            onDismissRequest = { showExtendDialog = false },
+            title = { Text("Extend session?") },
+            text = { Text("Keep this mode for another 30 minutes before switching.") },
+            confirmButton = {
+                TextButton(onClick = { onExtendSession(); showExtendDialog = false }) {
+                    Text("Extend 30 min")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExtendDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     val context = LocalContext.current
 
     // null = empty slot, non-null = app (uninstalled packages are dropped)
@@ -1368,7 +1752,11 @@ private fun RelaxedHomeScreen(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
             }
-            if (showSwitchButton) {
+            if (allowSkipExtend && duePrompt?.action == PromptAction.EXIT_FOCUS) {
+                TextButton(onClick = { showExtendDialog = true }) {
+                    Text("Extend", fontSize = 16.sp)
+                }
+            } else if (showSwitchButton) {
                 IconButton(onClick = onSwitchPreset) {
                     Icon(Icons.Outlined.SwapHoriz, contentDescription = "Switch preset")
                 }
