@@ -20,6 +20,7 @@ enum class LauncherMode { SIMPLE, RELAXED }
 
 data class LauncherSettings(
     val pinHash: String? = null,
+    val phoneTitle: String = "My Phone",
     val allowUserContactEditing: Boolean = true,
     val setupComplete: Boolean = false,
     val nativeLauncherPackage: String? = null,
@@ -43,6 +44,7 @@ data class LauncherSettings(
 class SettingsStore(private val context: Context) {
     private object Keys {
         val pinHash = stringPreferencesKey("pin_hash")
+        val phoneTitle = stringPreferencesKey("phone_title")
         val allowUserContactEditing = booleanPreferencesKey("allow_user_contact_editing")
         val setupComplete = booleanPreferencesKey("setup_complete")
         val nativeLauncherPackage = stringPreferencesKey("native_launcher_package")
@@ -70,6 +72,7 @@ class SettingsStore(private val context: Context) {
         .map { prefs: Preferences ->
             LauncherSettings(
                 pinHash = prefs[Keys.pinHash],
+                phoneTitle = prefs[Keys.phoneTitle] ?: "My Phone",
                 allowUserContactEditing = prefs[Keys.allowUserContactEditing] ?: true,
                 setupComplete = prefs[Keys.setupComplete] ?: false,
                 nativeLauncherPackage = prefs[Keys.nativeLauncherPackage],
@@ -95,6 +98,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setPinHash(hash: String) {
         context.settingsDataStore.edit { it[Keys.pinHash] = hash }
+    }
+
+    suspend fun setPhoneTitle(title: String) {
+        context.settingsDataStore.edit { it[Keys.phoneTitle] = title }
     }
 
     suspend fun setAllowUserContactEditing(allowed: Boolean) {

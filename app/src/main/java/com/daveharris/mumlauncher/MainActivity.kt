@@ -74,6 +74,7 @@ import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Mail
+import androidx.compose.material.icons.outlined.PhoneForwarded
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.AlertDialog
@@ -267,6 +268,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             }
             onResult(false)
         }
+    }
+
+    fun setPhoneTitle(title: String) {
+        viewModelScope.launch { settingsStore.setPhoneTitle(title) }
     }
 
     fun setAllowUserEditing(allowed: Boolean) {
@@ -535,6 +540,17 @@ private fun LauncherApp(
 
     LaunchedEffect(Unit) { activity.hideSystemUi() }
 
+    var callPhoneGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.CALL_PHONE,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val callPhoneLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted -> callPhoneGranted = granted }
+
     val isRelaxed = screen == Screen.RELAXED
     SideEffect {
         activity.relaxedModeActive = isRelaxed
@@ -622,6 +638,15 @@ private fun LauncherApp(
         ) {
             when (screen) {
                 Screen.HOME -> HomeScreen(
+                    phoneTitle = uiState.settings.phoneTitle,
+                    carerContact = uiState.contacts.firstOrNull { it.callable },
+                    onDirectCall = { contact ->
+                        if (callPhoneGranted) {
+                            directCall(context, contact.phoneNumber)
+                        } else {
+                            callPhoneLauncher.launch(android.Manifest.permission.CALL_PHONE)
+                        }
+                    },
                     onOpenCalls = { screen = Screen.CALLS },
                     onOpenMessages = { screen = Screen.MESSAGES },
                     onOpenAdmin = {
@@ -670,6 +695,7 @@ private fun LauncherApp(
                         onBack = { screen = Screen.HOME },
                         onSwitchToSimple = { screen = Screen.HOME },
                         onSwitchToRelaxed = { enterRelaxed() },
+                        onSetPhoneTitle = viewModel::setPhoneTitle,
                         onToggleEditing = viewModel::setAllowUserEditing,
                         onToggleRelaxedButton = viewModel::setShowRelaxedButton,
                         onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
@@ -935,6 +961,12 @@ private fun launchDialer(context: Context, phoneNumber: String) {
     launchExternalIntent(context, intent, "No phone app is available.")
 }
 
+private fun directCall(context: Context, phoneNumber: String) {
+    val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(phoneNumber)}"))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    launchExternalIntent(context, intent, "No phone app is available.")
+}
+
 private fun launchSms(context: Context, phoneNumber: String) {
     val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(phoneNumber)}"))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1065,6 +1097,9 @@ private fun SetupStepCard(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeScreen(
+    phoneTitle: String,
+    carerContact: Contact?,
+    onDirectCall: (Contact) -> Unit,
     onOpenCalls: () -> Unit,
     onOpenMessages: () -> Unit,
     onOpenAdmin: () -> Unit,
@@ -1088,7 +1123,7 @@ private fun HomeScreen(
         Spacer(modifier = Modifier.height(18.dp))
 
         Text(
-            text = "Mum's Phone",
+            text = phoneTitle,
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(
@@ -1128,6 +1163,14 @@ private fun HomeScreen(
                 color = MaterialTheme.colorScheme.secondary,
                 onClick = onOpenMessages,
             )
+            if (carerContact != null) {
+                HomeActionButton(
+                    label = "Call ${carerContact.displayName}",
+                    icon = Icons.Outlined.PhoneForwarded,
+                    color = MaterialTheme.colorScheme.error,
+                    onClick = { onDirectCall(carerContact) },
+                )
+            }
             if (showRelaxedButton) {
                 FilledTonalButton(
                     onClick = onOpenRelaxed,
@@ -1359,6 +1402,7 @@ private fun AdminScreen(
     onBack: () -> Unit,
     onSwitchToSimple: () -> Unit,
     onSwitchToRelaxed: () -> Unit,
+    onSetPhoneTitle: (String) -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleRelaxedButton: (Boolean) -> Unit,
     onToggleRelaxedScroll: () -> Unit,
@@ -1442,6 +1486,11 @@ private fun AdminScreen(
                 }
             }
         }
+
+        PhoneTitleCard(
+            title = settings.phoneTitle,
+            onSave = onSetPhoneTitle,
+        )
 
         ToggleCard(
             title = "Allow contact editing in Simple mode",
@@ -1763,6 +1812,35 @@ private fun ToggleCard(
                 lineHeight = 24.sp,
             )
             Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+    }
+}
+
+@Composable
+private fun PhoneTitleCard(title: String, onSave: (String) -> Unit) {
+    var draft by remember(title) { mutableStateOf(title) }
+    val isDirty = draft.trim() != title
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Phone name", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Shown at the top of the Simple home screen.",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            )
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("e.g. Mum's Phone") },
+            )
+            if (isDirty) {
+                Button(
+                    onClick = { onSave(draft.trim()) },
+                    modifier = Modifier.align(Alignment.End),
+                ) { Text("Save") }
+            }
         }
     }
 }

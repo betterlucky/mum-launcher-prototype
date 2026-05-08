@@ -36,7 +36,7 @@ class ContactRepository(private val context: Context) {
                 listOf(
                     Contact(
                         id = 1,
-                        displayName = "Add Mum's first contact",
+                        displayName = "Add your first contact",
                         phoneNumber = "01234 567890",
                     ),
                 ),
