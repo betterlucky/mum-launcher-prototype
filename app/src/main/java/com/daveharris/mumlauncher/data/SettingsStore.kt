@@ -26,6 +26,8 @@ data class LauncherSettings(
     val nativeLauncherPackage: String? = null,
     val nativeLauncherLabel: String? = null,
     val showRelaxedButton: Boolean = true,
+    val showHelpButton: Boolean = false,
+    val helpContactId: Long? = null,
     val relaxedScrollHorizontal: Boolean = false,
     val schedulingEnabled: Boolean = false,
     val scheduleDays: Set<Int> = setOf(2, 3, 4, 5, 6),
@@ -50,6 +52,8 @@ class SettingsStore(private val context: Context) {
         val nativeLauncherPackage = stringPreferencesKey("native_launcher_package")
         val nativeLauncherLabel = stringPreferencesKey("native_launcher_label")
         val showRelaxedButton = booleanPreferencesKey("show_relaxed_button")
+        val showHelpButton = booleanPreferencesKey("show_help_button")
+        val helpContactId = longPreferencesKey("help_contact_id")
         val relaxedScrollHorizontal = booleanPreferencesKey("relaxed_scroll_horizontal")
         val schedulingEnabled = booleanPreferencesKey("scheduling_enabled")
         val scheduleDays = stringPreferencesKey("schedule_days")
@@ -78,6 +82,8 @@ class SettingsStore(private val context: Context) {
                 nativeLauncherPackage = prefs[Keys.nativeLauncherPackage],
                 nativeLauncherLabel = prefs[Keys.nativeLauncherLabel],
                 showRelaxedButton = prefs[Keys.showRelaxedButton] ?: true,
+                showHelpButton = prefs[Keys.showHelpButton] ?: false,
+                helpContactId = prefs[Keys.helpContactId],
                 relaxedScrollHorizontal = prefs[Keys.relaxedScrollHorizontal] ?: false,
                 schedulingEnabled = prefs[Keys.schedulingEnabled] ?: false,
                 scheduleDays = decodeDays(prefs[Keys.scheduleDays]),
@@ -121,6 +127,16 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setShowRelaxedButton(show: Boolean) {
         context.settingsDataStore.edit { it[Keys.showRelaxedButton] = show }
+    }
+
+    suspend fun setShowHelpButton(show: Boolean) {
+        context.settingsDataStore.edit { it[Keys.showHelpButton] = show }
+    }
+
+    suspend fun setHelpContactId(id: Long?) {
+        context.settingsDataStore.edit {
+            if (id != null) it[Keys.helpContactId] = id else it.remove(Keys.helpContactId)
+        }
     }
 
     suspend fun setRelaxedScrollHorizontal(horizontal: Boolean) {

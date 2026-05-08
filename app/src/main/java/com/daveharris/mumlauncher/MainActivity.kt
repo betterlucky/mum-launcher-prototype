@@ -88,6 +88,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -280,6 +281,14 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun setShowRelaxedButton(show: Boolean) {
         viewModelScope.launch { settingsStore.setShowRelaxedButton(show) }
+    }
+
+    fun setShowHelpButton(show: Boolean) {
+        viewModelScope.launch { settingsStore.setShowHelpButton(show) }
+    }
+
+    fun setHelpContactId(id: Long?) {
+        viewModelScope.launch { settingsStore.setHelpContactId(id) }
     }
 
     fun setRelaxedScrollHorizontal(horizontal: Boolean) {
@@ -639,7 +648,11 @@ private fun LauncherApp(
             when (screen) {
                 Screen.HOME -> HomeScreen(
                     phoneTitle = uiState.settings.phoneTitle,
-                    carerContact = uiState.contacts.firstOrNull { it.callable },
+                    carerContact = if (uiState.settings.showHelpButton)
+                        uiState.settings.helpContactId
+                            ?.let { id -> uiState.contacts.find { it.id == id } }
+                            ?: uiState.contacts.firstOrNull { it.callable }
+                    else null,
                     onDirectCall = { contact ->
                         if (callPhoneGranted) {
                             directCall(context, contact.phoneNumber)
@@ -698,6 +711,8 @@ private fun LauncherApp(
                         onSetPhoneTitle = viewModel::setPhoneTitle,
                         onToggleEditing = viewModel::setAllowUserEditing,
                         onToggleRelaxedButton = viewModel::setShowRelaxedButton,
+                        onToggleHelpButton = viewModel::setShowHelpButton,
+                        onSetHelpContactId = viewModel::setHelpContactId,
                         onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
                         onAdd = { isCreatingContact = true },
                         onEdit = { showEditingDialog = it },
@@ -1165,7 +1180,7 @@ private fun HomeScreen(
             )
             if (carerContact != null) {
                 HomeActionButton(
-                    label = "Call ${carerContact.displayName}",
+                    label = "HELP",
                     icon = Icons.Outlined.PhoneForwarded,
                     color = MaterialTheme.colorScheme.error,
                     onClick = { onDirectCall(carerContact) },
@@ -1405,6 +1420,8 @@ private fun AdminScreen(
     onSetPhoneTitle: (String) -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleRelaxedButton: (Boolean) -> Unit,
+    onToggleHelpButton: (Boolean) -> Unit,
+    onSetHelpContactId: (Long?) -> Unit,
     onToggleRelaxedScroll: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
@@ -1502,6 +1519,18 @@ private fun AdminScreen(
             checked = settings.showRelaxedButton,
             onCheckedChange = onToggleRelaxedButton,
         )
+        ToggleCard(
+            title = "Show HELP button on Simple mode home screen",
+            checked = settings.showHelpButton,
+            onCheckedChange = onToggleHelpButton,
+        )
+        if (settings.showHelpButton) {
+            HelpContactPickerCard(
+                contacts = contacts.filter { it.callable },
+                selectedId = settings.helpContactId,
+                onSelect = onSetHelpContactId,
+            )
+        }
         ToggleCard(
             title = "Scroll Relaxed mode grid horizontally (page by page)",
             checked = settings.relaxedScrollHorizontal,
@@ -1840,6 +1869,55 @@ private fun PhoneTitleCard(title: String, onSave: (String) -> Unit) {
                     onClick = { onSave(draft.trim()) },
                     modifier = Modifier.align(Alignment.End),
                 ) { Text("Save") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelpContactPickerCard(
+    contacts: List<Contact>,
+    selectedId: Long?,
+    onSelect: (Long?) -> Unit,
+) {
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("HELP button calls", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            if (contacts.isEmpty()) {
+                Text(
+                    "No callable contacts yet. Add contacts below.",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+            } else {
+                contacts.forEach { contact ->
+                    val selected = contact.id == selectedId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(contact.id) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        RadioButton(selected = selected, onClick = { onSelect(contact.id) })
+                        Column {
+                            Text(contact.displayName, fontSize = 16.sp)
+                            Text(
+                                contact.phoneNumber,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            )
+                        }
+                    }
+                }
+                if (contacts.size > 1 && selectedId == null) {
+                    Text(
+                        "None selected — will use the first callable contact.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
             }
         }
     }
