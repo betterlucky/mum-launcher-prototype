@@ -17,10 +17,12 @@ import java.io.IOException
 private val Context.settingsDataStore by preferencesDataStore(name = "settings")
 
 enum class LauncherMode { SIMPLE, RELAXED }
+enum class DarkModePreference { LIGHT, DARK, SYSTEM }
 
 data class LauncherSettings(
     val pinHash: String? = null,
     val phoneTitle: String = "My Phone",
+    val darkMode: DarkModePreference = DarkModePreference.SYSTEM,
     val allowUserContactEditing: Boolean = true,
     val setupComplete: Boolean = false,
     val nativeLauncherPackage: String? = null,
@@ -47,6 +49,7 @@ class SettingsStore(private val context: Context) {
     private object Keys {
         val pinHash = stringPreferencesKey("pin_hash")
         val phoneTitle = stringPreferencesKey("phone_title")
+        val darkMode = stringPreferencesKey("dark_mode")
         val allowUserContactEditing = booleanPreferencesKey("allow_user_contact_editing")
         val setupComplete = booleanPreferencesKey("setup_complete")
         val nativeLauncherPackage = stringPreferencesKey("native_launcher_package")
@@ -77,6 +80,9 @@ class SettingsStore(private val context: Context) {
             LauncherSettings(
                 pinHash = prefs[Keys.pinHash],
                 phoneTitle = prefs[Keys.phoneTitle] ?: "My Phone",
+                darkMode = prefs[Keys.darkMode]
+                    ?.let { raw -> DarkModePreference.entries.firstOrNull { it.name == raw } }
+                    ?: DarkModePreference.SYSTEM,
                 allowUserContactEditing = prefs[Keys.allowUserContactEditing] ?: true,
                 setupComplete = prefs[Keys.setupComplete] ?: false,
                 nativeLauncherPackage = prefs[Keys.nativeLauncherPackage],
@@ -108,6 +114,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setPhoneTitle(title: String) {
         context.settingsDataStore.edit { it[Keys.phoneTitle] = title }
+    }
+
+    suspend fun setDarkMode(pref: DarkModePreference) {
+        context.settingsDataStore.edit { it[Keys.darkMode] = pref.name }
     }
 
     suspend fun setAllowUserContactEditing(allowed: Boolean) {

@@ -275,6 +275,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setPhoneTitle(title) }
     }
 
+    fun setDarkMode(pref: com.daveharris.mumlauncher.data.DarkModePreference) {
+        viewModelScope.launch { settingsStore.setDarkMode(pref) }
+    }
+
     fun setAllowUserEditing(allowed: Boolean) {
         viewModelScope.launch { settingsStore.setAllowUserContactEditing(allowed) }
     }
@@ -463,6 +467,7 @@ class MainActivity : ComponentActivity() {
 
     val pendingPromptAction = kotlinx.coroutines.flow.MutableStateFlow<PromptAction?>(null)
     var relaxedModeActive: Boolean = false
+    var lightThemeActive: Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -479,15 +484,13 @@ class MainActivity : ComponentActivity() {
             insets
         }
         setContent {
-            MumLauncherTheme {
-                val viewModel: MainViewModel = viewModel(
-                    factory = ViewModelProvider.AndroidViewModelFactory.getInstance(application),
-                )
-                LauncherApp(
-                    activity = this,
-                    viewModel = viewModel,
-                )
-            }
+            val viewModel: MainViewModel = viewModel(
+                factory = ViewModelProvider.AndroidViewModelFactory.getInstance(application),
+            )
+            LauncherApp(
+                activity = this,
+                viewModel = viewModel,
+            )
         }
     }
 
@@ -517,6 +520,17 @@ class MainActivity : ComponentActivity() {
             controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_DEFAULT
             controller.show(WindowInsets.Type.statusBars())
             controller.hide(WindowInsets.Type.navigationBars())
+            if (lightThemeActive) {
+                controller.setSystemBarsAppearance(
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                )
+            } else {
+                controller.setSystemBarsAppearance(
+                    0,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                )
+            }
         } else {
             controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsets.Type.systemBars())
@@ -536,6 +550,27 @@ private fun LauncherApp(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+
+    val darkTheme = when (uiState.settings.darkMode) {
+        com.daveharris.mumlauncher.data.DarkModePreference.LIGHT -> false
+        com.daveharris.mumlauncher.data.DarkModePreference.DARK -> true
+        com.daveharris.mumlauncher.data.DarkModePreference.SYSTEM -> isSystemDark
+    }
+
+    MumLauncherTheme(darkTheme = darkTheme) {
+        LauncherContent(activity = activity, viewModel = viewModel, uiState = uiState, darkTheme = darkTheme)
+    }
+}
+
+@Composable
+private fun LauncherContent(
+    activity: MainActivity,
+    viewModel: MainViewModel,
+    uiState: AppUiState,
+    darkTheme: Boolean,
+) {
+    val context = LocalContext.current
     val diagnostics by viewModel.diagnostics.collectAsState()
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
@@ -563,6 +598,7 @@ private fun LauncherApp(
     val isRelaxed = screen == Screen.RELAXED
     SideEffect {
         activity.relaxedModeActive = isRelaxed
+        activity.lightThemeActive = !darkTheme
         activity.applySystemUi()
     }
 
@@ -709,6 +745,7 @@ private fun LauncherApp(
                         onSwitchToSimple = { screen = Screen.HOME },
                         onSwitchToRelaxed = { enterRelaxed() },
                         onSetPhoneTitle = viewModel::setPhoneTitle,
+                        onSetDarkMode = viewModel::setDarkMode,
                         onToggleEditing = viewModel::setAllowUserEditing,
                         onToggleRelaxedButton = viewModel::setShowRelaxedButton,
                         onToggleHelpButton = viewModel::setShowHelpButton,
@@ -1130,17 +1167,12 @@ private fun HomeScreen(
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableStateOf(0L) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-    ) {
-        Spacer(modifier = Modifier.height(18.dp))
-
-        Text(
-            text = phoneTitle,
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Header — same 64dp height as Relaxed screen
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(64.dp)
                 .combinedClickable(
                     onClick = {
                         val now = System.currentTimeMillis()
@@ -1152,18 +1184,25 @@ private fun HomeScreen(
                         }
                     },
                     onLongClick = onOpenAdmin,
-                )
-                .padding(vertical = 16.dp),
-            textAlign = TextAlign.Center,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = phoneTitle,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                textAlign = TextAlign.Center,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
 
         Spacer(modifier = Modifier.weight(0.85f))
 
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             HomeActionButton(
@@ -1217,7 +1256,7 @@ private fun HomeScreen(
             }
         }
 
-        Spacer(modifier = Modifier.weight(1.15f))
+        Spacer(modifier = Modifier.weight(1.15f).padding(bottom = 24.dp))
     }
 }
 
@@ -1418,6 +1457,7 @@ private fun AdminScreen(
     onSwitchToSimple: () -> Unit,
     onSwitchToRelaxed: () -> Unit,
     onSetPhoneTitle: (String) -> Unit,
+    onSetDarkMode: (com.daveharris.mumlauncher.data.DarkModePreference) -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleRelaxedButton: (Boolean) -> Unit,
     onToggleHelpButton: (Boolean) -> Unit,
@@ -1508,6 +1548,25 @@ private fun AdminScreen(
             title = settings.phoneTitle,
             onSave = onSetPhoneTitle,
         )
+
+        Card {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Dark mode", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        com.daveharris.mumlauncher.data.DarkModePreference.LIGHT to "Light",
+                        com.daveharris.mumlauncher.data.DarkModePreference.DARK to "Dark",
+                        com.daveharris.mumlauncher.data.DarkModePreference.SYSTEM to "Device",
+                    ).forEach { (pref, label) ->
+                        FilterChip(
+                            selected = settings.darkMode == pref,
+                            onClick = { onSetDarkMode(pref) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+        }
 
         ToggleCard(
             title = "Allow contact editing in Simple mode",
