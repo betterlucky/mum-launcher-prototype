@@ -983,7 +983,7 @@ private fun SetupScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
-            text = "Set up Mum Launcher",
+            text = "Set up Dial It Back",
             color = Color.White,
             fontSize = 32.sp,
             fontWeight = FontWeight.Bold,
@@ -995,7 +995,7 @@ private fun SetupScreen(
         )
         SetupStepCard(
             title = "1. Set this as the home app",
-            body = "Choose Mum Launcher as the default home app so the phone always returns here.",
+            body = "Choose Dial It Back as the default home app so the phone always returns here.",
             actionLabel = "Open Home Settings",
             onAction = onOpenHomeSettings,
         )
@@ -1435,7 +1435,7 @@ private fun AdminScreen(
                 }
                 if (onUsePhoneNormally != null) {
                     Text(
-                        "Pressing Home always returns to Mum Launcher.",
+                        "Pressing Home always returns to Dial It Back.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     )
