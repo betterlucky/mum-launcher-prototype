@@ -91,6 +91,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -674,12 +675,13 @@ private fun LauncherContent(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
     ) { padding ->
-        Box(
+        Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
                 .padding(padding)
                 .navigationBarsPadding(),
+            color = MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.onBackground,
         ) {
             when (screen) {
                 Screen.HOME -> HomeScreen(
