@@ -48,6 +48,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -117,6 +118,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -125,6 +127,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -643,16 +647,17 @@ private fun LauncherContent(
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
     var isDefault by remember { mutableStateOf(isDefaultLauncher(context)) }
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
                 isDefault = isDefaultLauncher(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    val otherLaunchers = remember { getOtherLaunchers(context) }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
     var activePresetId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -756,7 +761,6 @@ private fun LauncherContent(
 
     if (!uiState.settings.setupComplete) {
         BackHandler {}
-        val otherLaunchers = remember { getOtherLaunchers(context) }
         SetupScreen(
             otherLaunchers = otherLaunchers,
             onSetNativeLauncher = viewModel::setNativeLauncher,
@@ -2220,7 +2224,16 @@ private fun AdminScreen(
             }
         }
 
-        CollapsibleSection("Schedule") {
+        CollapsibleSection(
+            "Schedule",
+            trailing = {
+                Switch(
+                    checked = settings.schedulingEnabled,
+                    onCheckedChange = onSetSchedulingEnabled,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+            },
+        ) {
             ScheduleCard(
                 settings = settings,
                 onSetSchedulingEnabled = onSetSchedulingEnabled,
@@ -2336,19 +2349,6 @@ private fun ScheduleCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Schedule",
-                    modifier = Modifier.weight(1f),
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Switch(checked = settings.schedulingEnabled, onCheckedChange = onSetSchedulingEnabled)
-            }
-
             if (settings.schedulingEnabled) {
                 Text("Days", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 val dayLabels = listOf(
@@ -2511,6 +2511,7 @@ private fun ScheduleCard(
 private fun CollapsibleSection(
     title: String,
     defaultExpanded: Boolean = false,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(defaultExpanded) }
@@ -2524,7 +2525,8 @@ private fun CollapsibleSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            trailing?.invoke(this)
             Icon(
                 if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
                 contentDescription = if (expanded) "Collapse" else "Expand",
