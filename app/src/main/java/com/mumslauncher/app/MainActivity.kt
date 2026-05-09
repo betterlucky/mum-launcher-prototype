@@ -2229,7 +2229,7 @@ private fun AdminScreen(
                 "Schedule",
                 trailing = {
                     Switch(
-                        checked = true,
+                        checked = settings.schedulingEnabled,
                         onCheckedChange = onSetSchedulingEnabled,
                         modifier = Modifier.padding(end = 8.dp),
                     )
@@ -2237,7 +2237,6 @@ private fun AdminScreen(
             ) {
                 ScheduleCard(
                     settings = settings,
-                    onSetSchedulingEnabled = onSetSchedulingEnabled,
                     onSetScheduleDays = onSetScheduleDays,
                     onSetScheduleStart = onSetScheduleStart,
                     onSetScheduleEnd = onSetScheduleEnd,
@@ -2258,7 +2257,7 @@ private fun AdminScreen(
             ) {
                 Text("Schedule", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                 Switch(
-                    checked = false,
+                    checked = settings.schedulingEnabled,
                     onCheckedChange = onSetSchedulingEnabled,
                     modifier = Modifier.padding(end = 8.dp),
                 )
@@ -2324,7 +2323,6 @@ private fun AdminScreen(
 @Composable
 private fun ScheduleCard(
     settings: LauncherSettings,
-    onSetSchedulingEnabled: (Boolean) -> Unit,
     onSetScheduleDays: (Set<Int>) -> Unit,
     onSetScheduleStart: (Int) -> Unit,
     onSetScheduleEnd: (Int) -> Unit,
