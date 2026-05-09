@@ -2234,7 +2234,7 @@ private fun AdminScreen(
                 )
             },
         ) {
-            ScheduleCard(
+            if (settings.schedulingEnabled) ScheduleCard(
                 settings = settings,
                 onSetSchedulingEnabled = onSetSchedulingEnabled,
                 onSetScheduleDays = onSetScheduleDays,
