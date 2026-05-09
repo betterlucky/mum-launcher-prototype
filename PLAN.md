@@ -39,24 +39,12 @@ Kiosk mode was removed. Lock task without device-owner does nothing useful, and 
 
 ## What's next
 
-### Scheduling
+### Play Store launch
 
-Switches between Simple and Relaxed mode on a timer. A Codex prototype was built and archived
-at `archive/codex-focus-mode-experiment` — see `CRIB.md` for what to reuse. The scheduling
-logic (`ModeScheduler.kt`) and notification infrastructure (`SchedulePromptController.kt`) are
-solid starting points.
-
-Key design questions still open:
-- What does the transition look like? (silent switch, notification prompt, or countdown?)
-- Can the person extend or skip a session from the home screen?
-- Does the schedule live in admin only, or does the person configure it themselves?
-
-### Further out
-
-- Import/export contacts and settings (backup)
-- Proper release signing setup
-- Play Store submission (name needs to be finalised first)
-- Screenshots and store listing copy
+- Recruit 12 testers (required for personal developer account before publishing)
+- Upload signed APK/AAB to closed testing track once Play Console automated check clears
+- Privacy policy live at https://betterlucky.github.io/mum-launcher-prototype/privacy.html
+- Store listing, icon, feature graphic, and screenshots all done
 
 ### Meta-launcher / persistent pass-through mode (parked, revisit post-launch)
 
@@ -81,11 +69,6 @@ What's missing:
 
 Decision: finish the current release path first, then prototype this. The main risk is flicker
 and permissions edge cases that won't be known until we try it on a real device.
-
-## Open questions
-
-- Whether scheduling UI belongs in admin only, or the person can configure their own schedule.
-- Whether the carer flow (admin → use normally) needs a more prominent entry point than the admin screen.
 
 ## Known rough edges
 
