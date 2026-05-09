@@ -104,6 +104,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -158,6 +159,7 @@ private enum class Screen {
     RELAXED,
     PRESET_MANAGER,
     PRESET_EDITOR,
+    IMPORT_CONTACTS,
 }
 
 data class InstalledApp(
@@ -320,6 +322,14 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun deleteContact(contact: Contact) {
         viewModelScope.launch { contactRepository.delete(contact) }
+    }
+
+    fun importContacts(entries: List<Pair<String, String>>) {
+        viewModelScope.launch { contactRepository.addAll(entries) }
+    }
+
+    fun restoreContacts(entries: List<Pair<String, String>>) {
+        viewModelScope.launch { contactRepository.replaceAll(entries) }
     }
 
     fun saveNativeLauncherIfNeeded(context: Context) {
@@ -596,6 +606,36 @@ private fun LauncherContent(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
     ) { granted -> callPhoneGranted = granted }
 
+    var readContactsGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.READ_CONTACTS,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val readContactsLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        readContactsGranted = granted
+        if (granted) screen = Screen.IMPORT_CONTACTS
+    }
+
+    val scope = rememberCoroutineScope()
+    val importFileLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val json = context.contentResolver.openInputStream(uri)
+                        ?.use { it.readBytes().decodeToString() } ?: return@runCatching
+                    val entries = parseContactsJson(json)
+                    if (entries.isNotEmpty()) viewModel.restoreContacts(entries)
+                }
+            }
+        }
+    }
+
     val isRelaxed = screen == Screen.RELAXED
     SideEffect {
         activity.relaxedModeActive = isRelaxed
@@ -655,6 +695,7 @@ private fun LauncherContent(
         screen = when (screen) {
             Screen.HOME -> Screen.HOME
             Screen.CALLS, Screen.MESSAGES, Screen.ADMIN, Screen.RELAXED -> Screen.HOME
+            Screen.IMPORT_CONTACTS -> Screen.ADMIN
             Screen.PRESET_MANAGER -> Screen.ADMIN
             Screen.PRESET_EDITOR -> Screen.PRESET_MANAGER
         }
@@ -756,6 +797,12 @@ private fun LauncherContent(
                         onAdd = { isCreatingContact = true },
                         onEdit = { showEditingDialog = it },
                         onDelete = viewModel::deleteContact,
+                        onImportFromDevice = {
+                            if (readContactsGranted) screen = Screen.IMPORT_CONTACTS
+                            else readContactsLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                        },
+                        onExportContacts = { exportContacts(context, uiState.contacts) },
+                        onImportFromFile = { importFileLauncher.launch("*/*") },
                         onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
                             { openNativeLauncher(context, pkg) }
                         },
@@ -827,6 +874,15 @@ private fun LauncherContent(
                         screen = Screen.PRESET_MANAGER
                     }
                 }
+
+                Screen.IMPORT_CONTACTS -> ImportContactsScreen(
+                    existingNumbers = uiState.contacts.map { normalizeNumber(it.phoneNumber) }.toSet(),
+                    onBack = { screen = Screen.ADMIN },
+                    onImport = { entries ->
+                        viewModel.importContacts(entries)
+                        screen = Screen.ADMIN
+                    },
+                )
             }
         }
     }
@@ -1448,6 +1504,201 @@ private fun ContactCard(
     }
 }
 
+// ── Import contacts from device ───────────────────────────────────────────────
+
+private data class DevicePhoneEntry(val displayName: String, val number: String)
+
+private fun normalizeNumber(raw: String) =
+    raw.filter { it.isDigit() || it == '+' }.trimStart('0').ifEmpty { raw }
+
+@Composable
+private fun ImportContactsScreen(
+    existingNumbers: Set<String>,
+    onBack: () -> Unit,
+    onImport: (List<Pair<String, String>>) -> Unit,
+) {
+    val context = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    var allEntries by remember { mutableStateOf<List<DevicePhoneEntry>>(emptyList()) }
+    var selected by remember { mutableStateOf<Set<DevicePhoneEntry>>(emptySet()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val entries = mutableListOf<DevicePhoneEntry>()
+            val cursor = context.contentResolver.query(
+                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER,
+                ),
+                null, null,
+                android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC",
+            )
+            cursor?.use {
+                val nameCol = it.getColumnIndexOrThrow(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numCol = it.getColumnIndexOrThrow(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                while (it.moveToNext()) {
+                    entries += DevicePhoneEntry(
+                        displayName = it.getString(nameCol) ?: continue,
+                        number = it.getString(numCol) ?: continue,
+                    )
+                }
+            }
+            allEntries = entries
+            loading = false
+        }
+    }
+
+    val filtered = remember(allEntries, query) {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) allEntries
+        else allEntries.filter { it.displayName.lowercase().contains(q) || it.number.contains(q) }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onBack, modifier = Modifier.fillMaxHeight()) {
+                Text("Back", fontSize = 18.sp)
+            }
+            Text(
+                "Phone contacts",
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            TextButton(
+                onClick = { onImport(selected.map { it.displayName to it.number }) },
+                enabled = selected.isNotEmpty(),
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Add ${if (selected.isEmpty()) "" else "(${selected.size})"}", fontSize = 16.sp) }
+        }
+
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            placeholder = { Text("Search") },
+            singleLine = true,
+        )
+
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.CircularProgressIndicator()
+            }
+            filtered.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(if (query.isEmpty()) "No contacts on device." else "No matches.")
+            }
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(filtered, key = { "${it.displayName}|${it.number}" }) { entry ->
+                    val alreadyImported = normalizeNumber(entry.number) in existingNumbers
+                    val isSelected = entry in selected
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !alreadyImported) {
+                                selected = if (isSelected) selected - entry else selected + entry
+                            },
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = when {
+                                alreadyImported -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                                else -> MaterialTheme.colorScheme.surface
+                            }
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = isSelected || alreadyImported,
+                                onCheckedChange = null,
+                                enabled = !alreadyImported,
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    entry.displayName,
+                                    fontSize = 16.sp,
+                                    color = if (alreadyImported)
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                    else MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    entry.number,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(
+                                        alpha = if (alreadyImported) 0.3f else 0.6f,
+                                    ),
+                                )
+                            }
+                            if (alreadyImported) {
+                                Text(
+                                    "Added",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Contact backup helpers ─────────────────────────────────────────────────────
+
+private fun exportContacts(context: Context, contacts: List<Contact>) {
+    if (contacts.isEmpty()) {
+        Toast.makeText(context, "No contacts to export.", Toast.LENGTH_SHORT).show()
+        return
+    }
+    runCatching {
+        val array = org.json.JSONArray()
+        contacts.forEach { c ->
+            array.put(org.json.JSONObject().apply {
+                put("name", c.displayName)
+                put("number", c.phoneNumber)
+                put("callable", c.callable)
+                put("messageable", c.messageable)
+            })
+        }
+        val file = java.io.File(context.cacheDir, "dial_it_back_contacts.json")
+        file.writeText(array.toString(2))
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", file,
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/json"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Dial It Back contacts backup")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share contacts backup")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.onFailure {
+        Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun parseContactsJson(json: String): List<Pair<String, String>> = runCatching {
+    val array = org.json.JSONArray(json)
+    List(array.length()) { i ->
+        val obj = array.getJSONObject(i)
+        (obj.optString("name") to obj.optString("number"))
+    }.filter { (n, p) -> n.isNotBlank() && p.isNotBlank() }
+}.getOrElse { emptyList() }
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -1468,6 +1719,9 @@ private fun AdminScreen(
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
+    onImportFromDevice: () -> Unit,
+    onExportContacts: () -> Unit,
+    onImportFromFile: () -> Unit,
     onUsePhoneNormally: (() -> Unit)?,
     onOpenPresets: () -> Unit,
     onOpenHomeSettings: () -> Unit,
@@ -1653,7 +1907,14 @@ private fun AdminScreen(
         }
 
         Text("Contacts", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-        FilledTonalButton(onClick = onAdd) { Text("Add contact") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("Add") }
+            FilledTonalButton(onClick = onImportFromDevice, modifier = Modifier.weight(1f)) { Text("From phone") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onExportContacts, modifier = Modifier.weight(1f)) { Text("Export backup") }
+            OutlinedButton(onClick = onImportFromFile, modifier = Modifier.weight(1f)) { Text("Restore backup") }
+        }
         contacts.forEach { contact ->
             ContactCard(
                 contact = contact,

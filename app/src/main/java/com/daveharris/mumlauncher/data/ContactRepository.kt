@@ -57,6 +57,32 @@ class ContactRepository(private val context: Context) {
         )
     }
 
+    suspend fun addAll(entries: List<Pair<String, String>>) = mutex.withLock {
+        val existing = observeContacts().first()
+        val nextId = (existing.maxOfOrNull { it.id } ?: 0L) + 1L
+        val newContacts = entries.mapIndexed { i, (name, number) ->
+            Contact(
+                id = nextId + i,
+                displayName = name.trim(),
+                phoneNumber = number.trim(),
+                sortOrder = existing.size + i,
+            )
+        }
+        saveContacts(existing + newContacts)
+    }
+
+    suspend fun replaceAll(entries: List<Pair<String, String>>) = mutex.withLock {
+        val newContacts = entries.mapIndexed { i, (name, number) ->
+            Contact(
+                id = (i + 1).toLong(),
+                displayName = name.trim(),
+                phoneNumber = number.trim(),
+                sortOrder = i,
+            )
+        }
+        saveContacts(newContacts)
+    }
+
     suspend fun update(contact: Contact) = mutex.withLock {
         val contacts = observeContacts().first()
         saveContacts(
