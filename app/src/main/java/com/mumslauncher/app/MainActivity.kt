@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher
+package com.mumslauncher.app
 
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -88,6 +88,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -128,13 +129,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.daveharris.mumlauncher.data.Contact
-import com.daveharris.mumlauncher.data.ContactRepository
-import com.daveharris.mumlauncher.data.LauncherSettings
-import com.daveharris.mumlauncher.data.Preset
-import com.daveharris.mumlauncher.data.PresetRepository
-import com.daveharris.mumlauncher.data.SettingsStore
-import com.daveharris.mumlauncher.ui.theme.MumLauncherTheme
+import com.mumslauncher.app.data.Contact
+import com.mumslauncher.app.data.ContactRepository
+import com.mumslauncher.app.data.LauncherSettings
+import com.mumslauncher.app.data.Preset
+import com.mumslauncher.app.data.PresetRepository
+import com.mumslauncher.app.data.SettingsStore
+import com.mumslauncher.app.ui.theme.MumLauncherTheme
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import java.util.Calendar
@@ -156,6 +157,7 @@ import javax.crypto.spec.PBEKeySpec
 private enum class Screen {
     HOME,
     CALLS,
+    ROTARY_DIALER,
     MESSAGES,
     ADMIN,
     RELAXED,
@@ -204,11 +206,30 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         initialValue = AppUiState(),
     )
 
+    private val packageChangeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: Intent) {
+            loadInstalledApps()
+        }
+    }
+
     init {
         viewModelScope.launch {
             contactRepository.ensureSeedData()
         }
         loadInstalledApps()
+        val filter = android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        getApplication<android.app.Application>().registerReceiver(packageChangeReceiver, filter)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        getApplication<android.app.Application>().unregisterReceiver(packageChangeReceiver)
     }
 
     private fun loadInstalledApps() {
@@ -217,7 +238,7 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             @Suppress("DEPRECATION")
             val apps = pm.queryIntentActivities(intent, 0)
-                .filter { it.activityInfo.packageName != "com.daveharris.mumlauncher" }
+                .filter { it.activityInfo.packageName != "com.mumslauncher.app" }
                 .map { InstalledApp(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
                 .sortedBy { it.label.lowercase() }
                 .distinctBy { it.packageName }
@@ -235,7 +256,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             return
         }
         viewModelScope.launch {
-            if (pin.isNotEmpty()) settingsStore.setPinHash(hashPin(pin))
+            if (pin.isNotEmpty()) {
+                val hash = withContext(Dispatchers.Default) { hashPin(pin) }
+                settingsStore.setPinHash(hash)
+            }
             settingsStore.setSetupComplete(true)
         }
     }
@@ -255,24 +279,30 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
             onResult(false)
             return
         }
-        val valid = verifyPinHash(pin, uiState.value.settings.pinHash)
-        if (valid) {
-            failedPinAttempts = 0
-            pinLockedUntil = 0L
-            onResult(true)
-        } else {
-            failedPinAttempts++
-            val lockMs = when {
-                failedPinAttempts >= 9 -> 5 * 60 * 1000L
-                failedPinAttempts >= 6 -> 30 * 1000L
-                failedPinAttempts >= 3 -> 5 * 1000L
-                else -> 0L
+        viewModelScope.launch {
+            val valid = withContext(Dispatchers.Default) {
+                verifyPinHash(pin, uiState.value.settings.pinHash)
             }
-            if (lockMs > 0) {
-                pinLockedUntil = now + lockMs
-                transientError.value = "Incorrect PIN. Locked for ${lockMs / 1000}s."
+            if (valid) {
+                failedPinAttempts = 0
+                pinLockedUntil = 0L
+                onResult(true)
+            } else {
+                failedPinAttempts++
+                val lockMs = when {
+                    failedPinAttempts >= 9 -> 5 * 60 * 1000L
+                    failedPinAttempts >= 6 -> 30 * 1000L
+                    failedPinAttempts >= 3 -> 5 * 1000L
+                    else -> 0L
+                }
+                if (lockMs > 0) {
+                    pinLockedUntil = now + lockMs
+                    transientError.value = "Incorrect PIN. Locked for ${lockMs / 1000}s."
+                } else {
+                    transientError.value = "Incorrect PIN."
+                }
+                onResult(false)
             }
-            onResult(false)
         }
     }
 
@@ -280,7 +310,7 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setPhoneTitle(title) }
     }
 
-    fun setDarkMode(pref: com.daveharris.mumlauncher.data.DarkModePreference) {
+    fun setDarkMode(pref: com.mumslauncher.app.data.DarkModePreference) {
         viewModelScope.launch { settingsStore.setDarkMode(pref) }
     }
 
@@ -312,6 +342,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setRelaxedScrollHorizontal(horizontal) }
     }
 
+    fun setUseRotaryDialer(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setUseRotaryDialer(enabled) }
+    }
+
     fun addContact(name: String, phoneNumber: String) {
         if (name.isBlank() || phoneNumber.isBlank()) {
             transientError.value = "Both name and phone number are required."
@@ -340,6 +374,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun restoreContacts(entries: List<Pair<String, String>>) {
         viewModelScope.launch { contactRepository.replaceAll(entries) }
+    }
+
+    fun restoreContactsFull(contacts: List<com.mumslauncher.app.data.Contact>) {
+        viewModelScope.launch { contactRepository.restoreAll(contacts) }
     }
 
     fun saveNativeLauncherIfNeeded(context: Context) {
@@ -387,18 +425,27 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
     fun setScheduleStartMinutes(context: Context, minutes: Int) {
         viewModelScope.launch {
             settingsStore.setScheduleStartMinutes(minutes)
+            val current = settingsStore.settings.first()
+            if (current.scheduleEndMinutes <= minutes) {
+                settingsStore.setScheduleEndMinutes(minutes + 30)
+            }
             SchedulePromptController.sync(context, settingsStore.settings.first())
         }
     }
 
     fun setScheduleEndMinutes(context: Context, minutes: Int) {
         viewModelScope.launch {
+            val current = settingsStore.settings.first()
+            if (minutes <= current.scheduleStartMinutes) {
+                transientError.value = "End time must be after start time."
+                return@launch
+            }
             settingsStore.setScheduleEndMinutes(minutes)
             SchedulePromptController.sync(context, settingsStore.settings.first())
         }
     }
 
-    fun setScheduledMode(mode: com.daveharris.mumlauncher.data.LauncherMode) {
+    fun setScheduledMode(mode: com.mumslauncher.app.data.LauncherMode) {
         viewModelScope.launch { settingsStore.setScheduledMode(mode) }
     }
 
@@ -574,9 +621,9 @@ private fun LauncherApp(
     val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
 
     val darkTheme = when (uiState.settings.darkMode) {
-        com.daveharris.mumlauncher.data.DarkModePreference.LIGHT -> false
-        com.daveharris.mumlauncher.data.DarkModePreference.DARK -> true
-        com.daveharris.mumlauncher.data.DarkModePreference.SYSTEM -> isSystemDark
+        com.mumslauncher.app.data.DarkModePreference.LIGHT -> false
+        com.mumslauncher.app.data.DarkModePreference.DARK -> true
+        com.mumslauncher.app.data.DarkModePreference.SYSTEM -> isSystemDark
     }
 
     MumLauncherTheme(darkTheme = darkTheme) {
@@ -602,6 +649,7 @@ private fun LauncherContent(
     var showFirstRunPreset by remember { mutableStateOf(false) }
     var showPresetPicker by remember { mutableStateOf(false) }
     var showNewPresetDialog by remember { mutableStateOf(false) }
+    var dialerReturnScreen by remember { mutableStateOf(Screen.CALLS) }
 
     LaunchedEffect(Unit) { activity.hideSystemUi() }
 
@@ -640,7 +688,7 @@ private fun LauncherContent(
                     val json = context.contentResolver.openInputStream(uri)
                         ?.use { it.readBytes().decodeToString() } ?: return@runCatching
                     val entries = parseContactsJson(json)
-                    if (entries.isNotEmpty()) viewModel.restoreContacts(entries)
+                    if (entries.isNotEmpty()) viewModel.restoreContactsFull(entries)
                 }
             }
         }
@@ -676,13 +724,13 @@ private fun LauncherContent(
         viewModel.acknowledgePrompt(context, action, anchor)
         when (action) {
             PromptAction.ENTER_FOCUS -> when (settings.scheduledMode) {
-                com.daveharris.mumlauncher.data.LauncherMode.RELAXED -> {
+                com.mumslauncher.app.data.LauncherMode.RELAXED -> {
                     if (uiState.presets.isNotEmpty()) {
                         activePresetId = activePresetId ?: uiState.presets.first().id
                         screen = Screen.RELAXED
                     }
                 }
-                com.daveharris.mumlauncher.data.LauncherMode.SIMPLE -> screen = Screen.HOME
+                com.mumslauncher.app.data.LauncherMode.SIMPLE -> screen = Screen.HOME
             }
             PromptAction.EXIT_FOCUS -> screen = Screen.HOME
         }
@@ -705,6 +753,7 @@ private fun LauncherContent(
         screen = when (screen) {
             Screen.HOME -> Screen.HOME
             Screen.CALLS, Screen.MESSAGES, Screen.ADMIN, Screen.RELAXED -> Screen.HOME
+            Screen.ROTARY_DIALER -> dialerReturnScreen
             Screen.IMPORT_CONTACTS -> Screen.ADMIN
             Screen.PRESET_MANAGER -> Screen.ADMIN
             Screen.PRESET_EDITOR -> Screen.PRESET_MANAGER
@@ -777,6 +826,17 @@ private fun LauncherContent(
                     onAdd = { isCreatingContact = true },
                     onEdit = { showEditingDialog = it },
                     onDelete = viewModel::deleteContact,
+                    onDial = if (uiState.settings.useRotaryDialer) {
+                        { dialerReturnScreen = Screen.CALLS; screen = Screen.ROTARY_DIALER }
+                    } else null,
+                )
+
+                Screen.ROTARY_DIALER -> RotaryDialerScreen(
+                    onBack = { screen = dialerReturnScreen },
+                    onCall = { number ->
+                        if (callPhoneGranted) directCall(context, number)
+                        else callPhoneLauncher.launch(android.Manifest.permission.CALL_PHONE)
+                    },
                 )
 
                 Screen.MESSAGES -> ContactListScreen(
@@ -808,6 +868,7 @@ private fun LauncherContent(
                         onSetHelpContactId = viewModel::setHelpContactId,
                         onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
                         onToggleAllowUserAddRelaxedApps = viewModel::setAllowUserAddRelaxedApps,
+                        onToggleRotaryDialer = viewModel::setUseRotaryDialer,
                         installedApps = uiState.installedApps,
                         onSetSimpleApps = viewModel::setSimpleApps,
                         onAdd = { isCreatingContact = true },
@@ -862,6 +923,9 @@ private fun LauncherContent(
                             onExtendSession = { viewModel.extendCurrentSession(context) },
                             allowAddApps = uiState.settings.allowUserAddRelaxedApps,
                             onUpdatePreset = viewModel::updatePreset,
+                            onOpenRotaryDialer = if (uiState.settings.useRotaryDialer) {
+                                { dialerReturnScreen = Screen.RELAXED; screen = Screen.ROTARY_DIALER }
+                            } else null,
                         )
                     } else {
                         screen = Screen.HOME
@@ -913,8 +977,6 @@ private fun LauncherContent(
                     if (valid) {
                         showPinPrompt = false
                         screen = Screen.ADMIN
-                    } else {
-                        Toast.makeText(context, "Incorrect PIN.", Toast.LENGTH_SHORT).show()
                     }
                 }
             },
@@ -954,17 +1016,10 @@ private fun LauncherContent(
 
     if (showFirstRunPreset) {
         FirstRunPresetDialog(
-            onAddAll = {
+            onConfirm = { name, startWithAll ->
                 showFirstRunPreset = false
-                val allApps = uiState.installedApps.map { it.packageName }
-                viewModel.createPreset("My Apps", allApps) { newId ->
-                    activePresetId = newId
-                    screen = Screen.RELAXED
-                }
-            },
-            onStartBlank = {
-                showFirstRunPreset = false
-                viewModel.createPreset("My Apps", emptyList()) { newId ->
+                val apps = if (startWithAll) uiState.installedApps.map { it.packageName } else emptyList()
+                viewModel.createPreset(name, apps) { newId ->
                     activePresetId = newId
                     screen = Screen.RELAXED
                 }
@@ -1087,7 +1142,7 @@ private fun launchApp(context: Context, packageName: String) {
     val intent = context.packageManager
         .getLaunchIntentForPackage(packageName)
         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    if (intent != null) context.startActivity(intent)
+    if (intent != null) runCatching { context.startActivity(intent) }
 }
 
 private fun launchDialer(context: Context, phoneNumber: String) {
@@ -1420,6 +1475,84 @@ private fun HomeActionButton(
     }
 }
 
+// ── Rotary Dialer ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun RotaryDialerScreen(
+    onBack: () -> Unit,
+    onCall: (String) -> Unit,
+) {
+    var digits by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxHeight(),
+            ) { Text("Back", fontSize = 18.sp) }
+            Text(
+                text = "Dial",
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.size(70.dp))
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = digits.ifEmpty { " " },
+                    modifier = Modifier.weight(1f),
+                    fontSize = 36.sp,
+                    fontWeight = FontWeight.Light,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    maxLines = 1,
+                )
+                if (digits.isNotEmpty()) {
+                    TextButton(onClick = { digits = digits.dropLast(1) }) {
+                        Text("⌫", fontSize = 24.sp)
+                    }
+                }
+            }
+        }
+
+        RotaryDial(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            onDigitDialled = { digit -> if (digits.length < 15) digits += digit },
+        )
+
+        Button(
+            onClick = { if (digits.isNotEmpty()) onCall(digits) },
+            enabled = digits.isNotEmpty(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+        ) {
+            Text("Call", fontSize = 22.sp)
+        }
+    }
+}
+
 // ── Contacts ──────────────────────────────────────────────────────────────────
 
 @Composable
@@ -1433,6 +1566,7 @@ private fun ContactListScreen(
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
+    onDial: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -1457,10 +1591,15 @@ private fun ContactListScreen(
                 fontSize = 30.sp,
                 fontWeight = FontWeight.Bold,
             )
-            if (canEdit) {
-                FilledTonalButton(onClick = onAdd) { Text("Add") }
-            } else {
-                Spacer(modifier = Modifier.size(70.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onDial != null) {
+                    FilledTonalButton(onClick = onDial) { Text("Dial") }
+                }
+                if (canEdit) {
+                    FilledTonalButton(onClick = onAdd) { Text("Add") }
+                } else if (onDial == null) {
+                    Spacer(modifier = Modifier.size(70.dp))
+                }
             }
         }
 
@@ -1578,8 +1717,8 @@ private fun ImportContactsScreen(
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val entries = mutableListOf<DevicePhoneEntry>()
+        val entries = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val result = mutableListOf<DevicePhoneEntry>()
             val cursor = context.contentResolver.query(
                 android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 arrayOf(
@@ -1593,15 +1732,16 @@ private fun ImportContactsScreen(
                 val nameCol = it.getColumnIndexOrThrow(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                 val numCol = it.getColumnIndexOrThrow(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
                 while (it.moveToNext()) {
-                    entries += DevicePhoneEntry(
+                    result += DevicePhoneEntry(
                         displayName = it.getString(nameCol) ?: continue,
                         number = it.getString(numCol) ?: continue,
                     )
                 }
             }
-            allEntries = entries
-            loading = false
+            result
         }
+        allEntries = entries
+        loading = false
     }
 
     val filtered = remember(allEntries, query) {
@@ -1727,7 +1867,8 @@ private fun exportContacts(context: Context, contacts: List<Contact>) {
                 put("messageable", c.messageable)
             })
         }
-        val file = java.io.File(context.cacheDir, "dial_it_back_contacts.json")
+        val exportDir = java.io.File(context.filesDir, "exports").also { it.mkdirs() }
+        val file = java.io.File(exportDir, "dial_it_back_contacts.json")
         file.writeText(array.toString(2))
         val uri = androidx.core.content.FileProvider.getUriForFile(
             context, "${context.packageName}.fileprovider", file,
@@ -1745,12 +1886,17 @@ private fun exportContacts(context: Context, contacts: List<Contact>) {
     }
 }
 
-private fun parseContactsJson(json: String): List<Pair<String, String>> = runCatching {
+private fun parseContactsJson(json: String): List<Contact> = runCatching {
     val array = org.json.JSONArray(json)
     List(array.length()) { i ->
         val obj = array.getJSONObject(i)
-        (obj.optString("name") to obj.optString("number"))
-    }.filter { (n, p) -> n.isNotBlank() && p.isNotBlank() }
+        Contact(
+            displayName = obj.optString("name"),
+            phoneNumber = obj.optString("number"),
+            callable = obj.optBoolean("callable", true),
+            messageable = obj.optBoolean("messageable", true),
+        )
+    }.filter { it.displayName.isNotBlank() && it.phoneNumber.isNotBlank() }
 }.getOrElse { emptyList() }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
@@ -1764,13 +1910,14 @@ private fun AdminScreen(
     onSwitchToSimple: () -> Unit,
     onSwitchToRelaxed: () -> Unit,
     onSetPhoneTitle: (String) -> Unit,
-    onSetDarkMode: (com.daveharris.mumlauncher.data.DarkModePreference) -> Unit,
+    onSetDarkMode: (com.mumslauncher.app.data.DarkModePreference) -> Unit,
     onToggleEditing: (Boolean) -> Unit,
     onToggleRelaxedButton: (Boolean) -> Unit,
     onToggleHelpButton: (Boolean) -> Unit,
     onSetHelpContactId: (Long?) -> Unit,
     onToggleRelaxedScroll: () -> Unit,
     onToggleAllowUserAddRelaxedApps: (Boolean) -> Unit,
+    onToggleRotaryDialer: (Boolean) -> Unit,
     installedApps: List<InstalledApp>,
     onSetSimpleApps: (List<String>) -> Unit,
     onAdd: () -> Unit,
@@ -1787,7 +1934,7 @@ private fun AdminScreen(
     onSetScheduleDays: (Set<Int>) -> Unit,
     onSetScheduleStart: (Int) -> Unit,
     onSetScheduleEnd: (Int) -> Unit,
-    onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
+    onSetScheduledMode: (com.mumslauncher.app.data.LauncherMode) -> Unit,
     onSetAudioAlert: (Boolean) -> Unit,
     onSetAllowSkip: (Boolean) -> Unit,
     onSetAllowDelay: (Boolean) -> Unit,
@@ -1867,9 +2014,9 @@ private fun AdminScreen(
                 Text("Dark mode", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
-                        com.daveharris.mumlauncher.data.DarkModePreference.LIGHT to "Light",
-                        com.daveharris.mumlauncher.data.DarkModePreference.DARK to "Dark",
-                        com.daveharris.mumlauncher.data.DarkModePreference.SYSTEM to "Device",
+                        com.mumslauncher.app.data.DarkModePreference.LIGHT to "Light",
+                        com.mumslauncher.app.data.DarkModePreference.DARK to "Dark",
+                        com.mumslauncher.app.data.DarkModePreference.SYSTEM to "Device",
                     ).forEach { (pref, label) ->
                         FilterChip(
                             selected = settings.darkMode == pref,
@@ -1912,6 +2059,11 @@ private fun AdminScreen(
             title = "Allow adding apps from Relaxed mode home screen",
             checked = settings.allowUserAddRelaxedApps,
             onCheckedChange = onToggleAllowUserAddRelaxedApps,
+        )
+        ToggleCard(
+            title = "Use rotary dialler for phone number entry",
+            checked = settings.useRotaryDialer,
+            onCheckedChange = onToggleRotaryDialer,
         )
 
         SimpleAppsCard(
@@ -2004,7 +2156,7 @@ private fun ScheduleCard(
     onSetScheduleDays: (Set<Int>) -> Unit,
     onSetScheduleStart: (Int) -> Unit,
     onSetScheduleEnd: (Int) -> Unit,
-    onSetScheduledMode: (com.daveharris.mumlauncher.data.LauncherMode) -> Unit,
+    onSetScheduledMode: (com.mumslauncher.app.data.LauncherMode) -> Unit,
     onSetAudioAlert: (Boolean) -> Unit,
     onSetAllowSkip: (Boolean) -> Unit,
     onSetAllowDelay: (Boolean) -> Unit,
@@ -2120,15 +2272,15 @@ private fun ScheduleCard(
 
                 Text("Switch to", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    com.daveharris.mumlauncher.data.LauncherMode.entries.forEach { mode ->
+                    com.mumslauncher.app.data.LauncherMode.entries.forEach { mode ->
                         FilterChip(
                             selected = settings.scheduledMode == mode,
                             onClick = { onSetScheduledMode(mode) },
                             label = {
                                 Text(
                                     when (mode) {
-                                        com.daveharris.mumlauncher.data.LauncherMode.SIMPLE -> "Simple"
-                                        com.daveharris.mumlauncher.data.LauncherMode.RELAXED -> "Relaxed"
+                                        com.mumslauncher.app.data.LauncherMode.SIMPLE -> "Simple"
+                                        com.mumslauncher.app.data.LauncherMode.RELAXED -> "Relaxed"
                                     },
                                 )
                             },
@@ -2333,6 +2485,7 @@ private fun RelaxedHomeScreen(
     onDelaySession: () -> Unit = {},
     onExtendSession: () -> Unit = {},
     allowAddApps: Boolean = false,
+    onOpenRotaryDialer: (() -> Unit)? = null,
 ) {
     var showExtendDialog by remember { mutableStateOf(false) }
     var editMode by remember { mutableStateOf(false) }
@@ -2399,7 +2552,7 @@ private fun RelaxedHomeScreen(
         val intent = context.packageManager
             .getLaunchIntentForPackage(packageName)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (intent != null) context.startActivity(intent)
+        if (intent != null) runCatching { context.startActivity(intent) }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -2612,6 +2765,17 @@ private fun RelaxedHomeScreen(
             }
         }
     } // end Column
+
+    if (onOpenRotaryDialer != null && !editMode) {
+        FloatingActionButton(
+            onClick = onOpenRotaryDialer,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp),
+        ) {
+            Icon(Icons.Outlined.Call, contentDescription = "Rotary dialler")
+        }
+    }
 
     // App picker overlay (shown in edit mode when allowAddApps is true)
     if (showAppPicker) {
@@ -3410,27 +3574,58 @@ private fun ContactEditorDialog(
 
 @Composable
 private fun FirstRunPresetDialog(
-    onAddAll: () -> Unit,
-    onStartBlank: () -> Unit,
+    onConfirm: (name: String, startWithAll: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var step by rememberSaveable { mutableStateOf(1) }
+    var name by rememberSaveable { mutableStateOf("") }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Set up Relaxed mode") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Choose how to start your first preset.")
-                FilledTonalButton(onClick = onAddAll, modifier = Modifier.fillMaxWidth()) {
-                    Text("Add all installed apps")
+            if (step == 1) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Give your first preset a name.")
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .imePadding(),
+                        label = { Text("Preset name") },
+                        singleLine = true,
+                        placeholder = { Text("e.g. My Apps") },
+                    )
                 }
-                OutlinedButton(onClick = onStartBlank, modifier = Modifier.fillMaxWidth()) {
-                    Text("Start blank")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("How would you like to start \"${name.trim()}\"?")
+                    FilledTonalButton(
+                        onClick = { onConfirm(name.trim(), true) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Add all installed apps") }
+                    OutlinedButton(
+                        onClick = { onConfirm(name.trim(), false) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Start blank") }
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            if (step == 1) {
+                TextButton(
+                    onClick = { step = 2 },
+                    enabled = name.isNotBlank(),
+                ) { Text("Next") }
+            }
+        },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            if (step == 2) {
+                TextButton(onClick = { step = 1 }) { Text("Back") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
         },
     )
 }

@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher.data
+package com.mumslauncher.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -45,6 +45,7 @@ data class LauncherSettings(
     val allowUserExtendSession: Boolean = false,
     val scheduleSkippedUntilMs: Long = 0L,
     val simpleApps: List<String> = emptyList(),
+    val useRotaryDialer: Boolean = false,
 )
 
 class SettingsStore(private val context: Context) {
@@ -74,6 +75,7 @@ class SettingsStore(private val context: Context) {
         val allowUserExtendSession = booleanPreferencesKey("allow_user_extend_session")
         val scheduleSkippedUntilMs = longPreferencesKey("schedule_skipped_until_ms")
         val simpleApps = stringPreferencesKey("simple_apps")
+        val useRotaryDialer = booleanPreferencesKey("use_rotary_dialer")
     }
 
     val settings: Flow<LauncherSettings> = context.settingsDataStore.data
@@ -111,6 +113,7 @@ class SettingsStore(private val context: Context) {
                 allowUserExtendSession = prefs[Keys.allowUserExtendSession] ?: false,
                 scheduleSkippedUntilMs = prefs[Keys.scheduleSkippedUntilMs] ?: 0L,
                 simpleApps = decodeSimpleApps(prefs[Keys.simpleApps]),
+                useRotaryDialer = prefs[Keys.useRotaryDialer] ?: false,
             )
         }
 
@@ -213,6 +216,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setSimpleApps(apps: List<String>) {
         context.settingsDataStore.edit { it[Keys.simpleApps] = apps.joinToString(",") }
+    }
+
+    suspend fun setUseRotaryDialer(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.useRotaryDialer] = enabled }
     }
 }
 

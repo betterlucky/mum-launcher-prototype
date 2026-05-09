@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher
+package com.mumslauncher.app
 
 import android.Manifest
 import android.app.AlarmManager
@@ -14,15 +14,14 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.daveharris.mumlauncher.data.LauncherSettings
-import com.daveharris.mumlauncher.data.SettingsStore
+import com.mumslauncher.app.data.LauncherSettings
+import com.mumslauncher.app.data.SettingsStore
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 
 private const val SCHEDULE_CHANNEL_ID = "schedule_prompts"
 private const val ENTER_NOTIFICATION_ID = 1001
 private const val EXIT_NOTIFICATION_ID = 1002
-const val ACTION_SCHEDULE_CHECK = "com.daveharris.mumlauncher.action.SCHEDULE_CHECK"
+const val ACTION_SCHEDULE_CHECK = "com.mumslauncher.app.action.SCHEDULE_CHECK"
 const val EXTRA_PROMPT_ACTION = "prompt_action"
 
 object SchedulePromptController {
@@ -42,8 +41,8 @@ object SchedulePromptController {
         }
     }
 
-    fun handleReceiver(context: Context) {
-        val settings = runBlocking { SettingsStore(context).settings.first() }
+    suspend fun handleReceiver(context: Context) {
+        val settings = SettingsStore(context).settings.first()
         sync(context, settings)
     }
 

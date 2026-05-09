@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher.data
+package com.mumslauncher.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
@@ -66,15 +66,17 @@ class PresetRepository(private val context: Context) {
 
     private fun decode(raw: String): List<Preset> {
         if (raw.isBlank()) return emptyList()
-        val json = JSONArray(raw)
-        return List(json.length()) { index ->
-            val item = json.getJSONObject(index)
-            val appsArray = item.optJSONArray("apps") ?: JSONArray()
-            Preset(
-                id = item.optLong("id"),
-                name = item.optString("name"),
-                apps = List(appsArray.length()) { i -> appsArray.getString(i) },
-            )
-        }
+        return runCatching {
+            val json = JSONArray(raw)
+            List(json.length()) { index ->
+                val item = json.getJSONObject(index)
+                val appsArray = item.optJSONArray("apps") ?: JSONArray()
+                Preset(
+                    id = item.optLong("id"),
+                    name = item.optString("name"),
+                    apps = List(appsArray.length()) { i -> appsArray.getString(i) },
+                )
+            }
+        }.getOrElse { emptyList() }
     }
 }

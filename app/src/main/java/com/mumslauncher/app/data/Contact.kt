@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher.data
+package com.mumslauncher.app.data
 
 data class Contact(
     val id: Long = 0,

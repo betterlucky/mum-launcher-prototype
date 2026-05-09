@@ -1,6 +1,6 @@
-package com.daveharris.mumlauncher
+package com.mumslauncher.app
 
-import com.daveharris.mumlauncher.data.LauncherSettings
+import com.mumslauncher.app.data.LauncherSettings
 import java.util.Calendar
 import java.util.Locale
 

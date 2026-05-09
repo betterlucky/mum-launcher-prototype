@@ -14,7 +14,7 @@ val localProps = Properties().also { props ->
 }
 
 android {
-    namespace = "com.daveharris.mumlauncher"
+    namespace = "com.mumslauncher.app"
     compileSdk = 35
 
     signingConfigs {
@@ -27,11 +27,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.daveharris.mumlauncher"
+        applicationId = "com.mumslauncher.app"
         minSdk = 29
-        targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 35
+        versionCode = 4
+        versionName = "0.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

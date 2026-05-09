@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher.data
+package com.mumslauncher.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
@@ -83,6 +83,13 @@ class ContactRepository(private val context: Context) {
         saveContacts(newContacts)
     }
 
+    suspend fun restoreAll(contacts: List<Contact>) = mutex.withLock {
+        val reassigned = contacts.mapIndexed { i, c ->
+            c.copy(id = (i + 1).toLong(), sortOrder = i)
+        }
+        saveContacts(reassigned)
+    }
+
     suspend fun update(contact: Contact) = mutex.withLock {
         val contacts = observeContacts().first()
         saveContacts(
@@ -129,17 +136,19 @@ class ContactRepository(private val context: Context) {
 
     private fun decodeContacts(raw: String): List<Contact> {
         if (raw.isBlank()) return emptyList()
-        val json = JSONArray(raw)
-        return List(json.length()) { index ->
-            val item = json.getJSONObject(index)
-            Contact(
-                id = item.optLong("id"),
-                displayName = item.optString("displayName"),
-                phoneNumber = item.optString("phoneNumber"),
-                callable = item.optBoolean("callable", true),
-                messageable = item.optBoolean("messageable", true),
-                sortOrder = item.optInt("sortOrder", index),
-            )
-        }.sortedWith(compareBy<Contact> { it.sortOrder }.thenBy { it.displayName.lowercase() })
+        return runCatching {
+            val json = JSONArray(raw)
+            List(json.length()) { index ->
+                val item = json.getJSONObject(index)
+                Contact(
+                    id = item.optLong("id"),
+                    displayName = item.optString("displayName"),
+                    phoneNumber = item.optString("phoneNumber"),
+                    callable = item.optBoolean("callable", true),
+                    messageable = item.optBoolean("messageable", true),
+                    sortOrder = item.optInt("sortOrder", index),
+                )
+            }.sortedWith(compareBy<Contact> { it.sortOrder }.thenBy { it.displayName.lowercase() })
+        }.getOrElse { emptyList() }
     }
 }

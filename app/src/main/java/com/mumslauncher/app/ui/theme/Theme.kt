@@ -1,4 +1,4 @@
-package com.daveharris.mumlauncher.ui.theme
+package com.mumslauncher.app.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
