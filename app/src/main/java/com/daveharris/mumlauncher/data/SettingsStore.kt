@@ -30,6 +30,7 @@ data class LauncherSettings(
     val showRelaxedButton: Boolean = true,
     val showHelpButton: Boolean = false,
     val helpContactId: Long? = null,
+    val allowUserAddRelaxedApps: Boolean = false,
     val relaxedScrollHorizontal: Boolean = false,
     val schedulingEnabled: Boolean = false,
     val scheduleDays: Set<Int> = setOf(2, 3, 4, 5, 6),
@@ -57,6 +58,7 @@ class SettingsStore(private val context: Context) {
         val showRelaxedButton = booleanPreferencesKey("show_relaxed_button")
         val showHelpButton = booleanPreferencesKey("show_help_button")
         val helpContactId = longPreferencesKey("help_contact_id")
+        val allowUserAddRelaxedApps = booleanPreferencesKey("allow_user_add_relaxed_apps")
         val relaxedScrollHorizontal = booleanPreferencesKey("relaxed_scroll_horizontal")
         val schedulingEnabled = booleanPreferencesKey("scheduling_enabled")
         val scheduleDays = stringPreferencesKey("schedule_days")
@@ -90,6 +92,7 @@ class SettingsStore(private val context: Context) {
                 showRelaxedButton = prefs[Keys.showRelaxedButton] ?: true,
                 showHelpButton = prefs[Keys.showHelpButton] ?: false,
                 helpContactId = prefs[Keys.helpContactId],
+                allowUserAddRelaxedApps = prefs[Keys.allowUserAddRelaxedApps] ?: false,
                 relaxedScrollHorizontal = prefs[Keys.relaxedScrollHorizontal] ?: false,
                 schedulingEnabled = prefs[Keys.schedulingEnabled] ?: false,
                 scheduleDays = decodeDays(prefs[Keys.scheduleDays]),
@@ -147,6 +150,10 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit {
             if (id != null) it[Keys.helpContactId] = id else it.remove(Keys.helpContactId)
         }
+    }
+
+    suspend fun setAllowUserAddRelaxedApps(allow: Boolean) {
+        context.settingsDataStore.edit { it[Keys.allowUserAddRelaxedApps] = allow }
     }
 
     suspend fun setRelaxedScrollHorizontal(horizontal: Boolean) {

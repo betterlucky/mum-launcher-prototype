@@ -298,6 +298,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { settingsStore.setHelpContactId(id) }
     }
 
+    fun setAllowUserAddRelaxedApps(allow: Boolean) {
+        viewModelScope.launch { settingsStore.setAllowUserAddRelaxedApps(allow) }
+    }
+
     fun setRelaxedScrollHorizontal(horizontal: Boolean) {
         viewModelScope.launch { settingsStore.setRelaxedScrollHorizontal(horizontal) }
     }
@@ -794,6 +798,7 @@ private fun LauncherContent(
                         onToggleHelpButton = viewModel::setShowHelpButton,
                         onSetHelpContactId = viewModel::setHelpContactId,
                         onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
+                        onToggleAllowUserAddRelaxedApps = viewModel::setAllowUserAddRelaxedApps,
                         onAdd = { isCreatingContact = true },
                         onEdit = { showEditingDialog = it },
                         onDelete = viewModel::deleteContact,
@@ -844,6 +849,8 @@ private fun LauncherContent(
                             onSkipSession = { viewModel.skipCurrentWindow(context) },
                             onDelaySession = { viewModel.delaySessionStart(context) },
                             onExtendSession = { viewModel.extendCurrentSession(context) },
+                            allowAddApps = uiState.settings.allowUserAddRelaxedApps,
+                            onUpdatePreset = viewModel::updatePreset,
                         )
                     } else {
                         screen = Screen.HOME
@@ -1716,6 +1723,7 @@ private fun AdminScreen(
     onToggleHelpButton: (Boolean) -> Unit,
     onSetHelpContactId: (Long?) -> Unit,
     onToggleRelaxedScroll: () -> Unit,
+    onToggleAllowUserAddRelaxedApps: (Boolean) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
@@ -1850,6 +1858,11 @@ private fun AdminScreen(
             title = "Scroll Relaxed mode grid horizontally (page by page)",
             checked = settings.relaxedScrollHorizontal,
             onCheckedChange = { onToggleRelaxedScroll() },
+        )
+        ToggleCard(
+            title = "Allow adding apps from Relaxed mode home screen",
+            checked = settings.allowUserAddRelaxedApps,
+            onCheckedChange = onToggleAllowUserAddRelaxedApps,
         )
 
         Card {
@@ -2264,10 +2277,12 @@ private fun RelaxedHomeScreen(
     onSkipSession: () -> Unit = {},
     onDelaySession: () -> Unit = {},
     onExtendSession: () -> Unit = {},
+    allowAddApps: Boolean = false,
 ) {
     var showExtendDialog by remember { mutableStateOf(false) }
     var editMode by remember { mutableStateOf(false) }
     var selectedIndex by remember { mutableStateOf<Int?>(null) }
+    var showAppPicker by remember { mutableStateOf(false) }
 
     fun swapItems(a: Int, b: Int) {
         val list = preset.apps.toMutableList()
@@ -2332,6 +2347,7 @@ private fun RelaxedHomeScreen(
         if (intent != null) context.startActivity(intent)
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -2378,14 +2394,23 @@ private fun RelaxedHomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "To add apps, use Admin → Manage Presets",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    modifier = Modifier.weight(1f),
-                )
+                if (!allowAddApps) {
+                    Text(
+                        "To add apps, use Admin → Manage Presets",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
                 OutlinedButton(onClick = { insertGap(selectedIndex ?: preset.apps.size) }) {
-                    Text("Add gap")
+                    Text("Gap")
+                }
+                if (allowAddApps) {
+                    OutlinedButton(onClick = { showAppPicker = true }) {
+                        Text("Add app")
+                    }
                 }
             }
         }
@@ -2527,6 +2552,95 @@ private fun RelaxedHomeScreen(
                             onClick = { if (editMode) onItemTap(idx) },
                             onRemove = { removeItem(idx) },
                         )
+                    }
+                }
+            }
+        }
+    } // end Column
+
+    // App picker overlay (shown in edit mode when allowAddApps is true)
+    if (showAppPicker) {
+        val insertAt = selectedIndex?.let { it + 1 } ?: preset.apps.size
+        RelaxedAppPickerOverlay(
+            installedApps = installedApps,
+            excludedPackages = preset.apps.filter { it.isNotEmpty() }.toSet(),
+            onSelect = { pkg ->
+                val list = preset.apps.toMutableList()
+                list.add(insertAt.coerceAtMost(list.size), pkg)
+                onUpdatePreset?.invoke(preset.copy(apps = list))
+                showAppPicker = false
+                selectedIndex = null
+            },
+            onDismiss = { showAppPicker = false },
+        )
+    }
+    } // end Box
+}
+
+@Composable
+private fun RelaxedAppPickerOverlay(
+    installedApps: List<InstalledApp>,
+    excludedPackages: Set<String>,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val available = remember(installedApps, excludedPackages, query) {
+        val q = query.trim().lowercase()
+        installedApps
+            .filter { it.packageName !in excludedPackages }
+            .let { if (q.isEmpty()) it else it.filter { a -> a.label.lowercase().contains(q) } }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(64.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxHeight()) {
+                    Text("Cancel", fontSize = 18.sp)
+                }
+                Text(
+                    "Add app",
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.width(80.dp))
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                placeholder = { Text("Search apps") },
+                singleLine = true,
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(available, key = { it.packageName }) { app ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(app.packageName) }
+                            .padding(vertical = 10.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        AppIconImage(
+                            packageName = app.packageName,
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)),
+                        )
+                        Text(app.label, fontSize = 18.sp)
                     }
                 }
             }
