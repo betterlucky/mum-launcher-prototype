@@ -53,6 +53,10 @@ android {
                 "proguard-rules.pro",
             )
         }
+        debug {
+            applicationIdSuffix = ".debug"
+            resValue("string", "app_name", "Dial It Back (dev)")
+        }
     }
 
     compileOptions {

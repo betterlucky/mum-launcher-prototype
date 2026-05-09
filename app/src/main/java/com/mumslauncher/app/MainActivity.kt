@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -103,6 +104,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -380,10 +382,8 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
         viewModelScope.launch { contactRepository.restoreAll(contacts) }
     }
 
-    fun saveNativeLauncherIfNeeded(context: Context) {
-        if (uiState.value.settings.nativeLauncherPackage != null) return
-        val info = detectNativeLauncher(context) ?: return
-        viewModelScope.launch { settingsStore.setNativeLauncher(info.first, info.second) }
+    fun setNativeLauncher(pkg: String, label: String) {
+        viewModelScope.launch { settingsStore.setNativeLauncher(pkg, label) }
     }
 
     private val _diagnostics = MutableStateFlow<Diagnostics?>(null)
@@ -642,6 +642,17 @@ private fun LauncherContent(
     val diagnostics by viewModel.diagnostics.collectAsState()
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     var showPinPrompt by rememberSaveable { mutableStateOf(false) }
+    var isDefault by remember { mutableStateOf(isDefaultLauncher(context)) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isDefault = isDefaultLauncher(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     var showEditingDialog by remember { mutableStateOf<Contact?>(null) }
     var isCreatingContact by remember { mutableStateOf(false) }
     var activePresetId by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -652,6 +663,13 @@ private fun LauncherContent(
     var dialerReturnScreen by remember { mutableStateOf(Screen.CALLS) }
 
     LaunchedEffect(Unit) { activity.hideSystemUi() }
+
+    LaunchedEffect(isDefault, uiState.settings.setupComplete) {
+        if (!isDefault && uiState.settings.setupComplete && screen == Screen.HOME) {
+            if (uiState.settings.pinHash == null) screen = Screen.ADMIN
+            else showPinPrompt = true
+        }
+    }
 
     var callPhoneGranted by remember {
         mutableStateOf(
@@ -738,11 +756,11 @@ private fun LauncherContent(
 
     if (!uiState.settings.setupComplete) {
         BackHandler {}
+        val otherLaunchers = remember { getOtherLaunchers(context) }
         SetupScreen(
-            onOpenHomeSettings = {
-                viewModel.saveNativeLauncherIfNeeded(context)
-                openHomeSettings(context)
-            },
+            otherLaunchers = otherLaunchers,
+            onSetNativeLauncher = viewModel::setNativeLauncher,
+            onOpenHomeSettings = { openHomeSettings(context) },
             onPinShortcut = { requestPinShortcut(context) },
             onFinishSetup = { pin -> viewModel.completeSetup(pin) },
         )
@@ -880,6 +898,8 @@ private fun LauncherContent(
                         },
                         onExportContacts = { exportContacts(context, uiState.contacts) },
                         onImportFromFile = { importFileLauncher.launch("*/*") },
+                        isDefaultLauncher = isDefault,
+                        onSetNativeLauncher = viewModel::setNativeLauncher,
                         onUsePhoneNormally = uiState.settings.nativeLauncherPackage?.let { pkg ->
                             { openNativeLauncher(context, pkg) }
                         },
@@ -1091,14 +1111,21 @@ private fun buildDiagnosticsFromApp(context: Context): Diagnostics {
     )
 }
 
-private fun detectNativeLauncher(context: Context): Pair<String, String>? {
+private fun isDefaultLauncher(context: Context): Boolean {
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
     val info = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        ?: return null
-    val pkg = info.activityInfo.packageName
-    if (pkg == context.packageName || pkg == "android") return null
-    val label = info.loadLabel(context.packageManager).toString()
-    return Pair(pkg, label)
+    return info?.activityInfo?.packageName == context.packageName
+}
+
+private fun getOtherLaunchers(context: Context): List<Pair<String, String>> {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+    return context.packageManager.queryIntentActivities(intent, 0)
+        .mapNotNull { info ->
+            val pkg = info.activityInfo.packageName
+            if (pkg == context.packageName || pkg == "android") null
+            else Pair(pkg, info.loadLabel(context.packageManager).toString())
+        }
+        .distinctBy { it.first }
 }
 
 private fun openHomeSettings(context: Context) {
@@ -1121,8 +1148,13 @@ private fun requestPinShortcut(context: Context) {
 }
 
 private fun openNativeLauncher(context: Context, packageName: String) {
-    val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+    val homeIntent = Intent(Intent.ACTION_MAIN)
+        .addCategory(Intent.CATEGORY_HOME)
+        .setPackage(packageName)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val fallback = context.packageManager.getLaunchIntentForPackage(packageName)
         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val intent = if (context.packageManager.resolveActivity(homeIntent, 0) != null) homeIntent else fallback
     if (intent != null) {
         runCatching { context.startActivity(intent) }
             .onFailure {
@@ -1188,11 +1220,39 @@ private fun Drawable.toBitmap(): Bitmap {
 
 @Composable
 private fun SetupScreen(
+    otherLaunchers: List<Pair<String, String>>,
+    onSetNativeLauncher: (String, String) -> Unit,
     onOpenHomeSettings: () -> Unit,
     onPinShortcut: () -> Unit,
     onFinishSetup: (String) -> Unit,
 ) {
     var pin by rememberSaveable { mutableStateOf("") }
+    var showLauncherPicker by rememberSaveable { mutableStateOf(false) }
+
+    if (showLauncherPicker) {
+        AlertDialog(
+            onDismissRequest = { showLauncherPicker = false },
+            title = { Text("Choose the normal launcher") },
+            text = {
+                Column {
+                    otherLaunchers.forEach { (pkg, label) ->
+                        TextButton(
+                            onClick = {
+                                onSetNativeLauncher(pkg, label)
+                                showLauncherPicker = false
+                                onOpenHomeSettings()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showLauncherPicker = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -1219,7 +1279,13 @@ private fun SetupScreen(
             title = "1. Set this as the home app",
             body = "Choose Dial It Back as the default home app so the phone always returns here.",
             actionLabel = "Open Home Settings",
-            onAction = onOpenHomeSettings,
+            onAction = {
+                when (otherLaunchers.size) {
+                    0 -> onOpenHomeSettings()
+                    1 -> { onSetNativeLauncher(otherLaunchers[0].first, otherLaunchers[0].second); onOpenHomeSettings() }
+                    else -> showLauncherPicker = true
+                }
+            },
         )
         SetupStepCard(
             title = "2. Pin to home screen",
@@ -1926,6 +1992,8 @@ private fun AdminScreen(
     onImportFromDevice: () -> Unit,
     onExportContacts: () -> Unit,
     onImportFromFile: () -> Unit,
+    isDefaultLauncher: Boolean,
+    onSetNativeLauncher: (String, String) -> Unit,
     onUsePhoneNormally: (() -> Unit)?,
     onOpenPresets: () -> Unit,
     onOpenHomeSettings: () -> Unit,
@@ -1943,6 +2011,33 @@ private fun AdminScreen(
     onOpenAlarmSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    val otherLaunchers = remember { getOtherLaunchers(context) }
+    var showAdminLauncherPicker by rememberSaveable { mutableStateOf(false) }
+
+    if (showAdminLauncherPicker) {
+        AlertDialog(
+            onDismissRequest = { showAdminLauncherPicker = false },
+            title = { Text("Full access launcher") },
+            text = {
+                Column {
+                    otherLaunchers.forEach { (pkg, label) ->
+                        TextButton(
+                            onClick = {
+                                onSetNativeLauncher(pkg, label)
+                                showAdminLauncherPicker = false
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(label, modifier = Modifier.fillMaxWidth()) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showAdminLauncherPicker = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1969,6 +2064,23 @@ private fun AdminScreen(
             Spacer(modifier = Modifier.width(72.dp))
         }
 
+        if (!isDefaultLauncher) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "Not set as home screen.",
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    FilledTonalButton(onClick = onOpenHomeSettings) { Text("Restore") }
+                }
+            }
+        }
+
         Card {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -1987,32 +2099,22 @@ private fun AdminScreen(
                         onClick = onSwitchToRelaxed,
                         modifier = Modifier.weight(1f),
                     ) { Text("Relaxed") }
-                    if (onUsePhoneNormally != null) {
-                        FilledTonalButton(
-                            onClick = onUsePhoneNormally,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Full access") }
-                    }
+                    FilledTonalButton(
+                        onClick = { onUsePhoneNormally?.invoke() },
+                        enabled = onUsePhoneNormally != null,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Full access") }
                 }
-                if (onUsePhoneNormally != null) {
-                    Text(
-                        "Pressing Home always returns to Dial It Back.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    )
-                }
-            }
-        }
-
-        PhoneTitleCard(
-            title = settings.phoneTitle,
-            onSave = onSetPhoneTitle,
-        )
-
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Dark mode", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Pressing Home always returns to Dial It Back.",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+                Text("Dark mode", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     listOf(
                         com.mumslauncher.app.data.DarkModePreference.LIGHT to "Light",
                         com.mumslauncher.app.data.DarkModePreference.DARK to "Dark",
@@ -2021,129 +2123,171 @@ private fun AdminScreen(
                         FilterChip(
                             selected = settings.darkMode == pref,
                             onClick = { onSetDarkMode(pref) },
-                            label = { Text(label) },
+                            label = { Text(label, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center) },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
             }
         }
 
-        ToggleCard(
-            title = "Allow contact editing in Simple mode",
-            checked = settings.allowUserContactEditing,
-            onCheckedChange = onToggleEditing,
-        )
-        ToggleCard(
-            title = "Show Relaxed mode button on Simple mode home screen",
-            checked = settings.showRelaxedButton,
-            onCheckedChange = onToggleRelaxedButton,
-        )
-        ToggleCard(
-            title = "Show HELP button on Simple mode home screen",
-            checked = settings.showHelpButton,
-            onCheckedChange = onToggleHelpButton,
-        )
-        if (settings.showHelpButton) {
-            HelpContactPickerCard(
-                contacts = contacts.filter { it.callable },
-                selectedId = settings.helpContactId,
-                onSelect = onSetHelpContactId,
+        CollapsibleSection("Simple mode") {
+            PhoneTitleCard(
+                title = settings.phoneTitle,
+                onSave = onSetPhoneTitle,
             )
-        }
-        ToggleCard(
-            title = "Scroll Relaxed mode grid horizontally (page by page)",
-            checked = settings.relaxedScrollHorizontal,
-            onCheckedChange = { onToggleRelaxedScroll() },
-        )
-        ToggleCard(
-            title = "Allow adding apps from Relaxed mode home screen",
-            checked = settings.allowUserAddRelaxedApps,
-            onCheckedChange = onToggleAllowUserAddRelaxedApps,
-        )
-        ToggleCard(
-            title = "Use rotary dialler for phone number entry",
-            checked = settings.useRotaryDialer,
-            onCheckedChange = onToggleRotaryDialer,
-        )
-
-        SimpleAppsCard(
-            simpleApps = settings.simpleApps,
-            installedApps = installedApps,
-            onSetSimpleApps = onSetSimpleApps,
-        )
-
-        Card {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Relaxed mode", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Create and edit app collections (presets) for Relaxed mode.",
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            ToggleCard(
+                title = "Allow contact editing",
+                checked = settings.allowUserContactEditing,
+                onCheckedChange = onToggleEditing,
+            )
+            ToggleCard(
+                title = "Show Relaxed mode button",
+                checked = settings.showRelaxedButton,
+                onCheckedChange = onToggleRelaxedButton,
+            )
+            ToggleCard(
+                title = "Show HELP button",
+                checked = settings.showHelpButton,
+                onCheckedChange = onToggleHelpButton,
+            )
+            if (settings.showHelpButton) {
+                HelpContactPickerCard(
+                    contacts = contacts.filter { it.callable },
+                    selectedId = settings.helpContactId,
+                    onSelect = onSetHelpContactId,
                 )
-                FilledTonalButton(onClick = onOpenPresets, modifier = Modifier.fillMaxWidth()) {
-                    Text("Manage presets")
-                }
             }
-        }
-
-        ScheduleCard(
-            settings = settings,
-            onSetSchedulingEnabled = onSetSchedulingEnabled,
-            onSetScheduleDays = onSetScheduleDays,
-            onSetScheduleStart = onSetScheduleStart,
-            onSetScheduleEnd = onSetScheduleEnd,
-            onSetScheduledMode = onSetScheduledMode,
-            onSetAudioAlert = onSetAudioAlert,
-            onSetAllowSkip = onSetAllowSkip,
-            onSetAllowDelay = onSetAllowDelay,
-            onSetAllowExtend = onSetAllowExtend,
-            onOpenNotificationSettings = onOpenNotificationSettings,
-            onOpenAlarmSettings = onOpenAlarmSettings,
-        )
-
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Diagnostics", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                if (diagnostics == null) {
-                    Text("Loading…")
-                } else {
-                    Text("Battery: ${diagnostics.batteryPercent}%")
-                    Text("Network: ${diagnostics.networkSummary}")
-                    Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
-                    Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
-                }
-                FilledTonalButton(onClick = onOpenHomeSettings) { Text("Open Home Settings") }
-                FilledTonalButton(onClick = onOpenAccessibilitySettings) { Text("Open Accessibility Settings") }
-            }
-        }
-
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Recovery notes", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text("If the PIN is lost, clear app data in Android Settings to reset everything.")
-            }
-        }
-
-        Text("Contacts", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("Add") }
-            FilledTonalButton(onClick = onImportFromDevice, modifier = Modifier.weight(1f)) { Text("From phone") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onExportContacts, modifier = Modifier.weight(1f)) { Text("Export backup") }
-            OutlinedButton(onClick = onImportFromFile, modifier = Modifier.weight(1f)) { Text("Restore backup") }
-        }
-        contacts.forEach { contact ->
-            ContactCard(
-                contact = contact,
-                actionLabel = "Edit",
-                canEdit = true,
-                onPrimaryAction = { onEdit(contact) },
-                onEdit = { onEdit(contact) },
-                onDelete = { onDelete(contact) },
+            ToggleCard(
+                title = "Use rotary dialler for phone number entry",
+                checked = settings.useRotaryDialer,
+                onCheckedChange = onToggleRotaryDialer,
             )
+            SimpleAppsCard(
+                simpleApps = settings.simpleApps,
+                installedApps = installedApps,
+                onSetSimpleApps = onSetSimpleApps,
+            )
+        }
+
+        CollapsibleSection("Relaxed mode") {
+            ToggleCard(
+                title = "Scroll grid horizontally (page by page)",
+                checked = settings.relaxedScrollHorizontal,
+                onCheckedChange = { onToggleRelaxedScroll() },
+            )
+            ToggleCard(
+                title = "Allow adding apps from home screen",
+                checked = settings.allowUserAddRelaxedApps,
+                onCheckedChange = onToggleAllowUserAddRelaxedApps,
+            )
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Create and edit app collections (presets) for Relaxed mode.",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                    FilledTonalButton(onClick = onOpenPresets, modifier = Modifier.fillMaxWidth()) {
+                        Text("Manage presets")
+                    }
+                }
+            }
+        }
+
+        CollapsibleSection("Full access") {
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "When Full access is active, pressing Home goes to the selected launcher. Open the app icon to return here.",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        fontSize = 14.sp,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Launcher: ${settings.nativeLauncherLabel ?: "not set"}",
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (otherLaunchers.isNotEmpty()) {
+                            TextButton(onClick = { showAdminLauncherPicker = true }) {
+                                Text(if (settings.nativeLauncherLabel != null) "Change" else "Set")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        CollapsibleSection("Schedule") {
+            ScheduleCard(
+                settings = settings,
+                onSetSchedulingEnabled = onSetSchedulingEnabled,
+                onSetScheduleDays = onSetScheduleDays,
+                onSetScheduleStart = onSetScheduleStart,
+                onSetScheduleEnd = onSetScheduleEnd,
+                onSetScheduledMode = onSetScheduledMode,
+                onSetAudioAlert = onSetAudioAlert,
+                onSetAllowSkip = onSetAllowSkip,
+                onSetAllowDelay = onSetAllowDelay,
+                onSetAllowExtend = onSetAllowExtend,
+                onOpenNotificationSettings = onOpenNotificationSettings,
+                onOpenAlarmSettings = onOpenAlarmSettings,
+            )
+        }
+
+        CollapsibleSection("Contacts") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("Add") }
+                FilledTonalButton(onClick = onImportFromDevice, modifier = Modifier.weight(1f)) { Text("From phone") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onExportContacts, modifier = Modifier.weight(1f)) { Text("Export backup") }
+                OutlinedButton(onClick = onImportFromFile, modifier = Modifier.weight(1f)) { Text("Restore backup") }
+            }
+            contacts.forEach { contact ->
+                ContactCard(
+                    contact = contact,
+                    actionLabel = "Edit",
+                    canEdit = true,
+                    onPrimaryAction = { onEdit(contact) },
+                    onEdit = { onEdit(contact) },
+                    onDelete = { onDelete(contact) },
+                )
+            }
+        }
+
+        CollapsibleSection("System") {
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilledTonalButton(onClick = onOpenHomeSettings, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open Home Settings")
+                    }
+                    FilledTonalButton(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open Accessibility Settings")
+                    }
+                }
+            }
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Diagnostics", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    if (diagnostics == null) {
+                        Text("Loading…")
+                    } else {
+                        Text("Battery: ${diagnostics.batteryPercent}%")
+                        Text("Network: ${diagnostics.networkSummary}")
+                        Text("Dialer app: ${diagnostics.dialerPackage ?: "Not found"}")
+                        Text("Messages app: ${diagnostics.smsPackage ?: "Not found"}")
+                    }
+                }
+            }
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Recovery", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("If the PIN is lost, clear app data in Android Settings to reset everything.")
+                }
+            }
         }
     }
 }
@@ -2359,6 +2503,35 @@ private fun ScheduleCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleSection(
+    title: String,
+    defaultExpanded: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(defaultExpanded) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .clickable { expanded = !expanded }
+                .padding(vertical = 10.dp, horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+            )
+        }
+        if (expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
         }
     }
 }
