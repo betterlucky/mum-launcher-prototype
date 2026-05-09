@@ -2224,30 +2224,45 @@ private fun AdminScreen(
             }
         }
 
-        CollapsibleSection(
-            "Schedule",
-            trailing = {
+        if (settings.schedulingEnabled) {
+            CollapsibleSection(
+                "Schedule",
+                trailing = {
+                    Switch(
+                        checked = true,
+                        onCheckedChange = onSetSchedulingEnabled,
+                        modifier = Modifier.padding(end = 8.dp),
+                    )
+                },
+            ) {
+                ScheduleCard(
+                    settings = settings,
+                    onSetSchedulingEnabled = onSetSchedulingEnabled,
+                    onSetScheduleDays = onSetScheduleDays,
+                    onSetScheduleStart = onSetScheduleStart,
+                    onSetScheduleEnd = onSetScheduleEnd,
+                    onSetScheduledMode = onSetScheduledMode,
+                    onSetAudioAlert = onSetAudioAlert,
+                    onSetAllowSkip = onSetAllowSkip,
+                    onSetAllowDelay = onSetAllowDelay,
+                    onSetAllowExtend = onSetAllowExtend,
+                    onOpenNotificationSettings = onOpenNotificationSettings,
+                    onOpenAlarmSettings = onOpenAlarmSettings,
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp, horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Schedule", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
                 Switch(
-                    checked = settings.schedulingEnabled,
+                    checked = false,
                     onCheckedChange = onSetSchedulingEnabled,
                     modifier = Modifier.padding(end = 8.dp),
                 )
-            },
-        ) {
-            if (settings.schedulingEnabled) ScheduleCard(
-                settings = settings,
-                onSetSchedulingEnabled = onSetSchedulingEnabled,
-                onSetScheduleDays = onSetScheduleDays,
-                onSetScheduleStart = onSetScheduleStart,
-                onSetScheduleEnd = onSetScheduleEnd,
-                onSetScheduledMode = onSetScheduledMode,
-                onSetAudioAlert = onSetAudioAlert,
-                onSetAllowSkip = onSetAllowSkip,
-                onSetAllowDelay = onSetAllowDelay,
-                onSetAllowExtend = onSetAllowExtend,
-                onOpenNotificationSettings = onOpenNotificationSettings,
-                onOpenAlarmSettings = onOpenAlarmSettings,
-            )
+            }
         }
 
         CollapsibleSection("Contacts") {
