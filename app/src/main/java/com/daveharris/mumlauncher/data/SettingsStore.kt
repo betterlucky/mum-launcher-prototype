@@ -44,6 +44,7 @@ data class LauncherSettings(
     val allowUserDelaySession: Boolean = false,
     val allowUserExtendSession: Boolean = false,
     val scheduleSkippedUntilMs: Long = 0L,
+    val simpleApps: List<String> = emptyList(),
 )
 
 class SettingsStore(private val context: Context) {
@@ -72,6 +73,7 @@ class SettingsStore(private val context: Context) {
         val allowUserDelaySession = booleanPreferencesKey("allow_user_delay_session")
         val allowUserExtendSession = booleanPreferencesKey("allow_user_extend_session")
         val scheduleSkippedUntilMs = longPreferencesKey("schedule_skipped_until_ms")
+        val simpleApps = stringPreferencesKey("simple_apps")
     }
 
     val settings: Flow<LauncherSettings> = context.settingsDataStore.data
@@ -108,6 +110,7 @@ class SettingsStore(private val context: Context) {
                 allowUserDelaySession = prefs[Keys.allowUserDelaySession] ?: false,
                 allowUserExtendSession = prefs[Keys.allowUserExtendSession] ?: false,
                 scheduleSkippedUntilMs = prefs[Keys.scheduleSkippedUntilMs] ?: 0L,
+                simpleApps = decodeSimpleApps(prefs[Keys.simpleApps]),
             )
         }
 
@@ -207,6 +210,10 @@ class SettingsStore(private val context: Context) {
     suspend fun setScheduleSkippedUntil(ms: Long) {
         context.settingsDataStore.edit { it[Keys.scheduleSkippedUntilMs] = ms }
     }
+
+    suspend fun setSimpleApps(apps: List<String>) {
+        context.settingsDataStore.edit { it[Keys.simpleApps] = apps.joinToString(",") }
+    }
 }
 
 private fun decodeDays(raw: String?): Set<Int> {
@@ -215,3 +222,8 @@ private fun decodeDays(raw: String?): Set<Int> {
 }
 
 private fun encodeDays(days: Set<Int>): String = days.sorted().joinToString(",")
+
+private fun decodeSimpleApps(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+}

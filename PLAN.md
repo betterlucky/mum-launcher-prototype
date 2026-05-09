@@ -58,6 +58,30 @@ Key design questions still open:
 - Play Store submission (name needs to be finalised first)
 - Screenshots and store listing copy
 
+### Meta-launcher / persistent pass-through mode (parked, revisit post-launch)
+
+The idea: make Dial It Back a transparent proxy launcher. In "trusted user" mode, the Home button
+press is silently forwarded to the native launcher — the user never sees our UI. An admin PIN
+brings control back. This is closer to the original vision of an invisible safety net rather than
+an explicit simplified launcher.
+
+What we already have that supports this:
+- We are permanently the default HOME handler
+- We detect and store the native launcher package during setup
+- Full Access / native launcher handoff already works as a regular app launch
+- Scheduling infrastructure could drive timed pass-through windows
+
+What's missing:
+- A transparent/invisible Activity as the CATEGORY_HOME handler (instead of the current opaque one)
+- Persistent pass-through state (DataStore flag: `passThroughActive`)
+- Home button as the control-back mechanism: first press → native launcher, long-press or
+  triple-tap → return to Dial It Back admin
+- Possible flicker on Home press (Activity transition) — needs testing
+- Possible permissions friction — needs testing
+
+Decision: finish the current release path first, then prototype this. The main risk is flicker
+and permissions edge cases that won't be known until we try it on a real device.
+
 ## Open questions
 
 - Whether scheduling UI belongs in admin only, or the person can configure their own schedule.

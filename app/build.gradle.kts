@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -6,9 +7,24 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Load signing credentials from local.properties (never commit that file)
+val localProps = Properties().also { props ->
+    val f = rootProject.file("local.properties")
+    if (f.exists()) props.load(f.inputStream())
+}
+
 android {
     namespace = "com.daveharris.mumlauncher"
     compileSdk = 35
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(localProps.getProperty("RELEASE_STORE_FILE", ""))
+            storePassword = localProps.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias = localProps.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
 
     defaultConfig {
         applicationId = "com.daveharris.mumlauncher"
@@ -31,9 +47,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Use the local debug keystore so a release APK can be installed for testing.
-            // Replace this with your own signing config before any store distribution.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

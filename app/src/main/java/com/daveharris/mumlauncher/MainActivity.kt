@@ -135,6 +135,8 @@ import com.daveharris.mumlauncher.data.Preset
 import com.daveharris.mumlauncher.data.PresetRepository
 import com.daveharris.mumlauncher.data.SettingsStore
 import com.daveharris.mumlauncher.ui.theme.MumLauncherTheme
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -300,6 +302,10 @@ class MainViewModel(application: android.app.Application) : AndroidViewModel(app
 
     fun setAllowUserAddRelaxedApps(allow: Boolean) {
         viewModelScope.launch { settingsStore.setAllowUserAddRelaxedApps(allow) }
+    }
+
+    fun setSimpleApps(apps: List<String>) {
+        viewModelScope.launch { settingsStore.setSimpleApps(apps) }
     }
 
     fun setRelaxedScrollHorizontal(horizontal: Boolean) {
@@ -751,6 +757,9 @@ private fun LauncherContent(
                     },
                     showRelaxedButton = uiState.settings.showRelaxedButton,
                     onOpenRelaxed = { enterRelaxed() },
+                    simpleApps = uiState.settings.simpleApps
+                        .mapNotNull { pkg -> uiState.installedApps.find { it.packageName == pkg } },
+                    onLaunchApp = { pkg -> launchApp(context, pkg) },
                     duePrompt = duePrompt,
                     allowSkip = uiState.settings.allowUserSkipSession,
                     allowDelay = uiState.settings.allowUserDelaySession,
@@ -799,6 +808,8 @@ private fun LauncherContent(
                         onSetHelpContactId = viewModel::setHelpContactId,
                         onToggleRelaxedScroll = { viewModel.setRelaxedScrollHorizontal(!uiState.settings.relaxedScrollHorizontal) },
                         onToggleAllowUserAddRelaxedApps = viewModel::setAllowUserAddRelaxedApps,
+                        installedApps = uiState.installedApps,
+                        onSetSimpleApps = viewModel::setSimpleApps,
                         onAdd = { isCreatingContact = true },
                         onEdit = { showEditingDialog = it },
                         onDelete = viewModel::deleteContact,
@@ -1072,6 +1083,13 @@ private fun openAccessibilitySettings(context: Context) {
     runCatching { context.startActivity(intent) }
 }
 
+private fun launchApp(context: Context, packageName: String) {
+    val intent = context.packageManager
+        .getLaunchIntentForPackage(packageName)
+        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent != null) context.startActivity(intent)
+}
+
 private fun launchDialer(context: Context, phoneNumber: String) {
     val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(phoneNumber)}"))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1222,6 +1240,8 @@ private fun HomeScreen(
     onOpenAdmin: () -> Unit,
     showRelaxedButton: Boolean,
     onOpenRelaxed: () -> Unit,
+    simpleApps: List<InstalledApp> = emptyList(),
+    onLaunchApp: (String) -> Unit = {},
     duePrompt: DuePrompt? = null,
     allowSkip: Boolean = false,
     allowDelay: Boolean = false,
@@ -1262,12 +1282,12 @@ private fun HomeScreen(
             )
         }
 
-        Spacer(modifier = Modifier.weight(0.85f))
-
+        // Scrollable body — centers when content fits, scrolls when apps overflow
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 32.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             HomeActionButton(
@@ -1319,9 +1339,36 @@ private fun HomeScreen(
                     ) { Text("Not yet — 15 more minutes", fontSize = 18.sp) }
                 }
             }
+            if (simpleApps.isNotEmpty()) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                simpleApps.forEach { app ->
+                    SimpleAppButton(app = app, onClick = { onLaunchApp(app.packageName) })
+                }
+            }
         }
+    }
+}
 
-        Spacer(modifier = Modifier.weight(1.15f).padding(bottom = 24.dp))
+@Composable
+private fun SimpleAppButton(app: InstalledApp, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 72.dp),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        AppIconImage(
+            packageName = app.packageName,
+            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)),
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Text(
+            text = app.label,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -1724,6 +1771,8 @@ private fun AdminScreen(
     onSetHelpContactId: (Long?) -> Unit,
     onToggleRelaxedScroll: () -> Unit,
     onToggleAllowUserAddRelaxedApps: (Boolean) -> Unit,
+    installedApps: List<InstalledApp>,
+    onSetSimpleApps: (List<String>) -> Unit,
     onAdd: () -> Unit,
     onEdit: (Contact) -> Unit,
     onDelete: (Contact) -> Unit,
@@ -1863,6 +1912,12 @@ private fun AdminScreen(
             title = "Allow adding apps from Relaxed mode home screen",
             checked = settings.allowUserAddRelaxedApps,
             onCheckedChange = onToggleAllowUserAddRelaxedApps,
+        )
+
+        SimpleAppsCard(
+            simpleApps = settings.simpleApps,
+            installedApps = installedApps,
+            onSetSimpleApps = onSetSimpleApps,
         )
 
         Card {
@@ -2575,6 +2630,163 @@ private fun RelaxedHomeScreen(
         )
     }
     } // end Box
+}
+
+// ── Simple mode app picker ─────────────────────────────────────────────────────
+
+@Composable
+private fun SimpleAppsCard(
+    simpleApps: List<String>,
+    installedApps: List<InstalledApp>,
+    onSetSimpleApps: (List<String>) -> Unit,
+) {
+    var showPicker by remember { mutableStateOf(false) }
+
+    Card {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Simple screen apps", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Add extra apps (games, notes, etc.) below the main buttons on the Simple screen.",
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+            if (simpleApps.isNotEmpty()) {
+                simpleApps.forEach { pkg ->
+                    val app = installedApps.find { it.packageName == pkg }
+                    val label = app?.label ?: pkg
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            if (app != null) {
+                                AppIconImage(
+                                    packageName = pkg,
+                                    modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)),
+                                )
+                            }
+                            Text(label, fontSize = 16.sp)
+                        }
+                        IconButton(onClick = { onSetSimpleApps(simpleApps - pkg) }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Remove $label")
+                        }
+                    }
+                }
+            }
+            FilledTonalButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (simpleApps.isEmpty()) "Add apps" else "Edit apps")
+            }
+        }
+    }
+
+    if (showPicker) {
+        SimpleAppPickerOverlay(
+            installedApps = installedApps,
+            selectedPackages = simpleApps.toSet(),
+            onDone = { selected ->
+                // Preserve existing order, append newly added ones alphabetically
+                val existing = simpleApps.filter { it in selected }
+                val added = selected
+                    .filter { it !in simpleApps }
+                    .sortedBy { pkg -> installedApps.find { it.packageName == pkg }?.label?.lowercase() ?: pkg }
+                onSetSimpleApps(existing + added)
+                showPicker = false
+            },
+            onDismiss = { showPicker = false },
+        )
+    }
+}
+
+@Composable
+private fun SimpleAppPickerOverlay(
+    installedApps: List<InstalledApp>,
+    selectedPackages: Set<String>,
+    onDone: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var current by remember { mutableStateOf(selectedPackages) }
+
+    val filtered = remember(installedApps, query) {
+        val q = query.trim().lowercase()
+        installedApps
+            .let { if (q.isEmpty()) it else it.filter { a -> a.label.lowercase().contains(q) } }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(64.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxHeight()) {
+                    Text("Cancel", fontSize = 18.sp)
+                }
+                Text(
+                    "Simple screen apps",
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                TextButton(onClick = { onDone(current) }, modifier = Modifier.fillMaxHeight()) {
+                    Text("Done", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                placeholder = { Text("Search apps") },
+                singleLine = true,
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(filtered, key = { it.packageName }) { app ->
+                    val checked = app.packageName in current
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                current = if (checked) current - app.packageName
+                                          else current + app.packageName
+                            }
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = {
+                                current = if (it) current + app.packageName
+                                           else current - app.packageName
+                            },
+                        )
+                        AppIconImage(
+                            packageName = app.packageName,
+                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(9.dp)),
+                        )
+                        Text(app.label, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
